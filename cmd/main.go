@@ -8,20 +8,21 @@ import (
 	"github.com/Uuq114/JanusLLM/internal/models"
 	"github.com/Uuq114/JanusLLM/internal/proxy"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
 
 func main() {
-	// 加载配置
-	config, err := loadConfig("config/config.yaml")
+	config, err := loadJanusConfig("config/config.yaml")
+	logger, _ := zap.NewProduction()
+	defer logger.Sync()
+
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		logger.Error("Failed to load janus config", zap.Error(err))
 	}
 
-	// 创建代理
 	p := proxy.NewProxy()
 
-	// 注册模型组
 	for _, group := range config.ModelGroups {
 		p.RegisterModelGroup(&group)
 	}
@@ -51,19 +52,17 @@ func main() {
 	}
 }
 
-// Config 配置结构
-type Config struct {
+type JanusConfig struct {
 	ModelGroups []models.ModelGroup `yaml:"model_groups"`
 }
 
-// loadConfig 加载配置文件
-func loadConfig(path string) (*Config, error) {
+func loadJanusConfig(path string) (*JanusConfig, error) {
 	file, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 
-	var config Config
+	var config JanusConfig
 	if err := yaml.Unmarshal(file, &config); err != nil {
 		return nil, err
 	}

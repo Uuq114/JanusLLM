@@ -7,42 +7,28 @@ import (
 	"github.com/Uuq114/JanusLLM/internal/models"
 )
 
-// Balancer 定义负载均衡器接口
+// balancer
+
 type Balancer interface {
 	Next() *models.ModelConfig
 	AddModel(model *models.ModelConfig)
 	RemoveModel(modelName string)
 }
 
-// RoundRobinBalancer 实现轮询负载均衡
+// round-robin balancer
+
 type RoundRobinBalancer struct {
 	models []*models.ModelConfig
 	index  uint64
 	mu     sync.RWMutex
 }
 
-// WeightedBalancer 实现加权轮询负载均衡
-type WeightedBalancer struct {
-	models []*models.ModelConfig
-	index  uint64
-	mu     sync.RWMutex
-}
-
-// NewRoundRobinBalancer 创建轮询负载均衡器
 func NewRoundRobinBalancer() *RoundRobinBalancer {
 	return &RoundRobinBalancer{
 		models: make([]*models.ModelConfig, 0),
 	}
 }
 
-// NewWeightedBalancer 创建加权轮询负载均衡器
-func NewWeightedBalancer() *WeightedBalancer {
-	return &WeightedBalancer{
-		models: make([]*models.ModelConfig, 0),
-	}
-}
-
-// Next 获取下一个模型配置（轮询）
 func (rb *RoundRobinBalancer) Next() *models.ModelConfig {
 	rb.mu.RLock()
 	defer rb.mu.RUnlock()
@@ -55,7 +41,38 @@ func (rb *RoundRobinBalancer) Next() *models.ModelConfig {
 	return rb.models[index]
 }
 
-// Next 获取下一个模型配置（加权轮询）
+func (rb *RoundRobinBalancer) AddModel(model *models.ModelConfig) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	rb.models = append(rb.models, model)
+}
+
+func (rb *RoundRobinBalancer) RemoveModel(modelName string) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
+	for i, model := range rb.models {
+		if model.Name == modelName {
+			rb.models = append(rb.models[:i], rb.models[i+1:]...)
+			break
+		}
+	}
+}
+
+// weighted balancer
+
+type WeightedBalancer struct {
+	models []*models.ModelConfig
+	index  uint64
+	mu     sync.RWMutex
+}
+
+func NewWeightedBalancer() *WeightedBalancer {
+	return &WeightedBalancer{
+		models: make([]*models.ModelConfig, 0),
+	}
+}
+
 func (wb *WeightedBalancer) Next() *models.ModelConfig {
 	wb.mu.RLock()
 	defer wb.mu.RUnlock()
@@ -85,34 +102,12 @@ func (wb *WeightedBalancer) Next() *models.ModelConfig {
 	return wb.models[0]
 }
 
-// AddModel 添加模型
-func (rb *RoundRobinBalancer) AddModel(model *models.ModelConfig) {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	rb.models = append(rb.models, model)
-}
-
-// RemoveModel 移除模型
-func (rb *RoundRobinBalancer) RemoveModel(modelName string) {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-
-	for i, model := range rb.models {
-		if model.Name == modelName {
-			rb.models = append(rb.models[:i], rb.models[i+1:]...)
-			break
-		}
-	}
-}
-
-// AddModel 添加模型（加权）
 func (wb *WeightedBalancer) AddModel(model *models.ModelConfig) {
 	wb.mu.Lock()
 	defer wb.mu.Unlock()
 	wb.models = append(wb.models, model)
 }
 
-// RemoveModel 移除模型（加权）
 func (wb *WeightedBalancer) RemoveModel(modelName string) {
 	wb.mu.Lock()
 	defer wb.mu.Unlock()

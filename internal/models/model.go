@@ -1,6 +1,5 @@
 package models
 
-// ModelConfig 定义模型配置
 type ModelConfig struct {
 	Name        string  `yaml:"name"`        // 模型名称
 	Type        string  `yaml:"type"`        // 模型类型 (openai, claude, local)
@@ -11,7 +10,6 @@ type ModelConfig struct {
 	Temperature float64 `yaml:"temperature"` // 温度参数
 }
 
-// ModelGroup 定义模型组
 type ModelGroup struct {
 	Name     string        `yaml:"name"`     // 组名称
 	Models   []ModelConfig `yaml:"models"`   // 组内模型列表
