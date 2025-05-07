@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"os"
 
-	"JanusLLM/internal/models"
-	"JanusLLM/internal/proxy"
+	"github.com/Uuq114/JanusLLM/internal/models"
+	"github.com/Uuq114/JanusLLM/internal/proxy"
 	"github.com/gin-gonic/gin"
 	"gopkg.in/yaml.v3"
 )
