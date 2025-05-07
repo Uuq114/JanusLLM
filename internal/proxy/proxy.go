@@ -22,12 +22,12 @@ func NewProxy() *Proxy {
 
 func (p *Proxy) RegisterModelGroup(group *models.ModelGroup) {
 	var b balancer.Balancer
-	if group.Strategy == "weighted" {
-		b = balancer.NewWeightedBalancer()
-	} else {
+	switch group.Strategy {
+	case "round-robin":
 		b = balancer.NewRoundRobinBalancer()
+	case "weighted":
+		b = balancer.NewWeightedBalancer()
 	}
-
 	for _, model := range group.Models {
 		b.AddModel(&model)
 	}
