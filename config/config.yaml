@@ -25,4 +25,4 @@ model_groups:
         api_key: your-claude-api-key
         weight: 1
         max_tokens: 4096
-        temperature: 0.7 
+        temperature: 0.7

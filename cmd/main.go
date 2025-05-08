@@ -64,21 +64,6 @@ func loadJanusConfig(path string) (*JanusConfig, error) {
 	return &config, nil
 }
 
-type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type ChatReqBody struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	DoSample    bool      `json:"do_sample" default:true`
-	Temperature float64   `json:"temperature" default:0.7`
-	TopP        float64   `json:"top_p" default:1.0`
-	MaxTokens   int       `json:"max_tokens" default:4096`
-	Stream      bool      `json:"stream" default:false`
-}
-
 func logReqHeadersMiddleware(logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Set("logger", logger)
@@ -88,7 +73,7 @@ func logReqHeadersMiddleware(logger *zap.Logger) gin.HandlerFunc {
 			"X-Request-ID": c.Request.Header.Get("X-Request-ID"),
 		}
 		// req body
-		var reqBody ChatReqBody
+		var reqBody proxy.ChatReqBody
 		if err := c.ShouldBindJSON(&reqBody); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
