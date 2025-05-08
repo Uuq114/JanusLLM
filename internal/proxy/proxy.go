@@ -54,12 +54,12 @@ type ChatReqBody struct {
 
 func (p *Proxy) HandleRequest(c *gin.Context) {
 	// get model endpoint
-	modelGroup := c.MustGet("reqBody").(ChatReqBody).Model
-	balancer, exists := p.balancers[modelGroup]
+	reqModel := c.MustGet("reqBody").(ChatReqBody).Model
+	balancer, exists := p.balancers[reqModel]
 	reqBody := c.MustGet("reqBody").(ChatReqBody)
 	logger := c.MustGet("logger").(*zap.Logger)
 	logger.Debug("request body",
-		zap.String("model", modelGroup),
+		zap.String("model", reqModel),
 		zap.Bool("do_sample", reqBody.DoSample),
 		zap.Float64("temperature", reqBody.Temperature),
 		zap.Float64("top_p", reqBody.TopP),
@@ -71,23 +71,27 @@ func (p *Proxy) HandleRequest(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Model group not found"})
 		return
 	}
-	model := balancer.Next()
-	if model == nil {
+	upstreamModel := balancer.Next()
+	if upstreamModel == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "No available models"})
 		return
 	}
-	body, err := json.Marshal(c.MustGet("reqBody").(ChatReqBody))
+	// replace model name with upstream model
+	body := c.MustGet("reqBody").(ChatReqBody)
+	body.Model = upstreamModel.Name
+	c.Set("reqBody", body)
+	byteBody, err := json.Marshal(body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	// forward request
-	req, err := http.NewRequest(http.MethodPost, model.BaseURL+c.Request.URL.Path, bytes.NewBuffer(body))
+	req, err := http.NewRequest(http.MethodPost, upstreamModel.BaseURL+c.Request.URL.Path, bytes.NewBuffer(byteBody))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	logger.Info("req body raw", zap.ByteString("body", body))
+	logger.Info("req body raw", zap.ByteString("body", byteBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	for key, values := range c.Request.Header {
@@ -95,8 +99,8 @@ func (p *Proxy) HandleRequest(c *gin.Context) {
 			req.Header.Add(key, value)
 		}
 	}
-	if model.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+model.APIKey)
+	if upstreamModel.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+upstreamModel.APIKey)
 	}
 	client := &http.Client{}
 	resp, err := client.Do(req)

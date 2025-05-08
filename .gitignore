@@ -25,4 +25,4 @@ go.work.sum
 .env
 
 # config file
-config/*
+config/config.yaml

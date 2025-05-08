@@ -1,0 +1,7 @@
+model_groups:
+  - name: deepseek-v3
+  strategy: round-robin
+    models:
+      - name: DeepSeek-V3-int8
+        type: openai
+        base_url: xxx
