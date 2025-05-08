@@ -15,7 +15,7 @@ import (
 func main() {
 	logger, _ := zap.NewProduction()
 	defer logger.Sync()
-	config, err := loadJanusConfig("config/config.yaml")
+	config, err := loadJanusConfig("../config/config.yaml")
 	if err != nil {
 		logger.Error("Failed to load config", zap.Error(err))
 	}
