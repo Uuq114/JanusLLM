@@ -7,6 +7,7 @@ import (
 
 	"github.com/Uuq114/JanusLLM/internal/balancer"
 	"github.com/Uuq114/JanusLLM/internal/models"
+	"go.uber.org/zap"
 
 	"github.com/gin-gonic/gin"
 )
@@ -53,6 +54,17 @@ type ChatReqBody struct {
 func (p *Proxy) HandleRequest(c *gin.Context) {
 	modelGroup := c.MustGet("reqBody").(ChatReqBody).Model
 	balancer, exists := p.balancers[modelGroup]
+	reqBody := c.MustGet("reqBody").(ChatReqBody)
+	logger := c.MustGet("logger").(*zap.Logger)
+	logger.Debug("request body",
+		zap.String("model", modelGroup),
+		zap.Bool("do_sample", reqBody.DoSample),
+		zap.Float64("temperature", reqBody.Temperature),
+		zap.Float64("top_p", reqBody.TopP),
+		zap.Int("max_tokens", reqBody.MaxTokens),
+		zap.Bool("stream", reqBody.Stream),
+		zap.Any("messages", reqBody.Messages),
+	)
 	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Model group not found"})
 		return
