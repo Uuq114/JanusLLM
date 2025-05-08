@@ -52,6 +52,7 @@ type ChatReqBody struct {
 }
 
 func (p *Proxy) HandleRequest(c *gin.Context) {
+	// get model endpoint
 	modelGroup := c.MustGet("reqBody").(ChatReqBody).Model
 	balancer, exists := p.balancers[modelGroup]
 	reqBody := c.MustGet("reqBody").(ChatReqBody)
@@ -102,6 +103,7 @@ func (p *Proxy) HandleRequest(c *gin.Context) {
 		return
 	}
 	defer resp.Body.Close()
+	// copy response
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -112,5 +114,5 @@ func (p *Proxy) HandleRequest(c *gin.Context) {
 			c.Header(key, value)
 		}
 	}
-	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), respBody)
+	c.Data(resp.StatusCode, "application/json", respBody)
 }
