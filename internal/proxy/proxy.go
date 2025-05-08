@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 
@@ -75,7 +76,7 @@ func (p *Proxy) HandleRequest(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "No available models"})
 		return
 	}
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := json.Marshal(c.MustGet("reqBody").(ChatReqBody))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -86,6 +87,7 @@ func (p *Proxy) HandleRequest(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	logger.Info("req body raw", zap.ByteString("body", body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	for key, values := range c.Request.Header {
