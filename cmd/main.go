@@ -5,11 +5,13 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/Uuq114/JanusLLM/internal/models"
-	"github.com/Uuq114/JanusLLM/internal/proxy"
+	"github.com/creasty/defaults"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
+
+	"github.com/Uuq114/JanusLLM/internal/models"
+	"github.com/Uuq114/JanusLLM/internal/proxy"
 )
 
 func main() {
@@ -75,6 +77,12 @@ func logReqHeadersMiddleware(logger *zap.Logger) gin.HandlerFunc {
 		// req body
 		var reqBody proxy.ChatReqBody
 		if err := c.ShouldBindJSON(&reqBody); err != nil {
+			logger.Error("Failed to bind request body", zap.Error(err))
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if err := defaults.Set(&reqBody); err != nil {
+			logger.Error("Failed to set default values", zap.Error(err))
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}

@@ -6,9 +6,10 @@ import (
 	"io"
 	"net/http"
 
+	"go.uber.org/zap"
+
 	"github.com/Uuq114/JanusLLM/internal/balancer"
 	"github.com/Uuq114/JanusLLM/internal/models"
-	"go.uber.org/zap"
 
 	"github.com/gin-gonic/gin"
 )
@@ -45,11 +46,11 @@ type Message struct {
 type ChatReqBody struct {
 	Model       string    `json:"model"`
 	Messages    []Message `json:"messages"`
-	DoSample    bool      `json:"do_sample" default:true`
-	Temperature float64   `json:"temperature" default:0.7`
-	TopP        float64   `json:"top_p" default:1.0`
-	MaxTokens   int       `json:"max_tokens" default:4096`
-	Stream      bool      `json:"stream" default:false`
+	DoSample    bool      `json:"do_sample" default:"true"`
+	Temperature float64   `json:"temperature" default:"0.7"`
+	TopP        float64   `json:"top_p" default:"1.0"`
+	MaxTokens   int       `json:"max_tokens" default:"4096"`
+	Stream      bool      `json:"stream" default:"false"`
 }
 
 func (p *Proxy) HandleRequest(c *gin.Context) {
