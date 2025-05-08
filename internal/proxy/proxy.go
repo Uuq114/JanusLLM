@@ -7,6 +7,7 @@ import (
 
 	"github.com/Uuq114/JanusLLM/internal/balancer"
 	"github.com/Uuq114/JanusLLM/internal/models"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -35,7 +36,7 @@ func (p *Proxy) RegisterModelGroup(group *models.ModelGroup) {
 }
 
 func (p *Proxy) HandleRequest(c *gin.Context) {
-	modelGroup := c.Param("model_group")
+	modelGroup := c.PostForm("model")
 	balancer, exists := p.balancers[modelGroup]
 	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Model group not found"})
@@ -51,17 +52,23 @@ func (p *Proxy) HandleRequest(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read request body"})
 		return
 	}
-	req, err := http.NewRequest(c.Request.Method, model.BaseURL+c.Request.URL.Path, bytes.NewBuffer(body))
+	// forward request
+	req, err := http.NewRequest(http.MethodPost, model.BaseURL+c.Request.URL.Path, bytes.NewBuffer(body))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
 		return
 	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 	for key, values := range c.Request.Header {
 		for _, value := range values {
 			req.Header.Add(key, value)
 		}
 	}
-	req.Header.Set("Authorization", "Bearer "+model.APIKey)
+	if model.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+model.APIKey)
+	}
+
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {

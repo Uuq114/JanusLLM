@@ -27,7 +27,7 @@ func main() {
 	}
 
 	r := gin.Default()
-	r.Use(logReqHeaders(logger))
+	r.Use(logReqHeadersMiddleware(logger))
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "pong",
@@ -37,8 +37,8 @@ func main() {
 	api := r.Group("/v1")
 	{
 		api.POST("/chat/completions", p.HandleRequest)
-		api.POST("/completions", p.HandleRequest)
-		api.POST("/embeddings", p.HandleRequest)
+		//api.POST("/completions", p.HandleRequest)
+		//api.POST("/embeddings", p.HandleRequest)
 	}
 
 	if err := r.Run(":8080"); err != nil {
@@ -64,16 +64,42 @@ func loadJanusConfig(path string) (*JanusConfig, error) {
 	return &config, nil
 }
 
-func logReqHeaders(logger *zap.Logger) gin.HandlerFunc {
+type Message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type ChatReqBody struct {
+	Model       string    `json:"model"`
+	Messages    []Message `json:"messages"`
+	DoSample    bool      `json:"do_sample" default:true`
+	Temperature float64   `json:"temperature" default:0.7`
+	TopP        float64   `json:"top_p" default:1.0`
+	MaxTokens   int       `json:"max_tokens" default:4096`
+	Stream      bool      `json:"stream" default:false`
+}
+
+func logReqHeadersMiddleware(logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		c.Set("logger", logger)
+		// req headers
 		headers := map[string]string{
 			"User-Agent":   c.Request.UserAgent(),
 			"X-Request-ID": c.Request.Header.Get("X-Request-ID"),
 		}
+		// req body
+		var reqBody ChatReqBody
+		if err := c.ShouldBindJSON(&reqBody); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.Set("reqBody", reqBody)
+
 		logger.Info("Request Headers",
 			zap.String("method", c.Request.Method),
 			zap.String("url", c.Request.URL.String()),
 			zap.Any("headers", headers),
+			zap.String("model", reqBody.Model),
 		)
 		c.Next()
 	}
