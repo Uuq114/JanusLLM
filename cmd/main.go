@@ -5,68 +5,95 @@ import (
 	"net/http"
 	"os"
 
-	"JanusLLM/internal/models"
-	"JanusLLM/internal/proxy"
+	"github.com/creasty/defaults"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
+
+	"github.com/Uuq114/JanusLLM/internal/models"
+	"github.com/Uuq114/JanusLLM/internal/proxy"
 )
 
 func main() {
-	// 加载配置
-	config, err := loadConfig("config/config.yaml")
+	logger, _ := zap.NewProduction()
+	defer logger.Sync()
+	config, err := loadJanusConfig("../config/config.yaml")
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		logger.Error("Failed to load config", zap.Error(err))
 	}
 
-	// 创建代理
 	p := proxy.NewProxy()
-
-	// 注册模型组
 	for _, group := range config.ModelGroups {
 		p.RegisterModelGroup(&group)
+		logger.Info("Registered model group", zap.String("name", group.Name))
 	}
 
-	// 设置路由
 	r := gin.Default()
-
-	// 健康检查
+	r.Use(logReqHeadersMiddleware(logger))
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "pong",
 		})
 	})
 
-	// API路由
 	api := r.Group("/v1")
 	{
-		// OpenAI兼容API
 		api.POST("/chat/completions", p.HandleRequest)
-		api.POST("/completions", p.HandleRequest)
-		api.POST("/embeddings", p.HandleRequest)
+		//api.POST("/completions", p.HandleRequest)
+		//api.POST("/embeddings", p.HandleRequest)
 	}
 
-	// 启动服务器
 	if err := r.Run(":8080"); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
 
-// Config 配置结构
-type Config struct {
+type JanusConfig struct {
 	ModelGroups []models.ModelGroup `yaml:"model_groups"`
 }
 
-// loadConfig 加载配置文件
-func loadConfig(path string) (*Config, error) {
+func loadJanusConfig(path string) (*JanusConfig, error) {
 	file, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 
-	var config Config
+	var config JanusConfig
 	if err := yaml.Unmarshal(file, &config); err != nil {
 		return nil, err
 	}
 
 	return &config, nil
+}
+
+func logReqHeadersMiddleware(logger *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Set("logger", logger)
+		// req headers
+		headers := map[string]string{
+			"User-Agent":   c.Request.UserAgent(),
+			"X-Request-ID": c.Request.Header.Get("X-Request-ID"),
+		}
+		// req body
+		var reqBody proxy.ChatReqBody
+		if err := c.ShouldBindJSON(&reqBody); err != nil {
+			logger.Error("Failed to bind request body", zap.Error(err))
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if err := defaults.Set(&reqBody); err != nil {
+			logger.Error("Failed to set default values", zap.Error(err))
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.Set("reqBody", reqBody)
+
+		logger.Info("Request Headers",
+			zap.String("method", c.Request.Method),
+			zap.String("url", c.Request.URL.String()),
+			zap.Any("headers", headers),
+			zap.String("model", reqBody.Model),
+		)
+		c.Next()
+	}
 }
