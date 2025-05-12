@@ -1,7 +1,9 @@
 model_groups:
   - name: deepseek-v3
-  strategy: round-robin
+    strategy: round-robin
     models:
       - name: DeepSeek-V3-int8
         type: openai
-        base_url: xxx
+        base_url: xx
+
+database_url: "<user>:<password>@tcp(<host>:<port>)/<database>?charset=utf8mb4&parseTime=True&loc=Local"
