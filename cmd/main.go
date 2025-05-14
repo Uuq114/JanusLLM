@@ -4,14 +4,22 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
+	"time"
 
+	"github.com/Uuq114/JanusLLM/internal/auth"
+	"github.com/Uuq114/JanusLLM/internal/models"
+	"github.com/Uuq114/JanusLLM/internal/proxy"
 	"github.com/creasty/defaults"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
+)
 
-	"github.com/Uuq114/JanusLLM/internal/models"
-	"github.com/Uuq114/JanusLLM/internal/proxy"
+var (
+	validKeys = make(map[string]auth.Key)
+	mutex     sync.RWMutex
 )
 
 func main() {
@@ -22,20 +30,27 @@ func main() {
 		logger.Error("Failed to load config", zap.Error(err))
 	}
 
+	// setup proxy
 	p := proxy.NewProxy()
 	for _, group := range config.ModelGroups {
 		p.RegisterModelGroup(&group)
 		logger.Info("Registered model group", zap.String("name", group.Name))
 	}
 
+	// init
 	r := gin.Default()
+
+	go startBackgroundTasks(logger)
+
 	r.Use(logReqHeadersMiddleware(logger))
+	r.Use(checkKeyMiddleware(logger))
+
+	// routers
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "pong",
 		})
 	})
-
 	api := r.Group("/v1")
 	{
 		api.POST("/chat/completions", p.HandleRequest)
@@ -43,13 +58,17 @@ func main() {
 		//api.POST("/embeddings", p.HandleRequest)
 	}
 
+	// run server
 	if err := r.Run(":8080"); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
 
+// structs
+
 type JanusConfig struct {
 	ModelGroups []models.ModelGroup `yaml:"model_groups"`
+	DatabaseUrl string              `yaml:"database_url"`
 }
 
 func loadJanusConfig(path string) (*JanusConfig, error) {
@@ -57,14 +76,16 @@ func loadJanusConfig(path string) (*JanusConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	var config JanusConfig
 	if err := yaml.Unmarshal(file, &config); err != nil {
 		return nil, err
 	}
-
+	// update db global var
+	auth.MysqlDsn = config.DatabaseUrl
 	return &config, nil
 }
+
+// middlewares
 
 func logReqHeadersMiddleware(logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -87,7 +108,6 @@ func logReqHeadersMiddleware(logger *zap.Logger) gin.HandlerFunc {
 			return
 		}
 		c.Set("reqBody", reqBody)
-
 		logger.Info("Request Headers",
 			zap.String("method", c.Request.Method),
 			zap.String("url", c.Request.URL.String()),
@@ -96,4 +116,78 @@ func logReqHeadersMiddleware(logger *zap.Logger) gin.HandlerFunc {
 		)
 		c.Next()
 	}
+}
+
+func checkKeyMiddleware(logger *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		key := c.Request.Header.Get("Authorization")
+		if key == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "No authorization header"})
+			c.Abort()
+			return
+		}
+		key = strings.TrimPrefix(key, "Bearer ")
+		mutex.RLock()
+		defer mutex.RUnlock()
+		if _, ok := validKeys[key]; !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization key"})
+			c.Abort()
+			return
+		}
+		model := c.MustGet("reqBody").(proxy.ChatReqBody).Model
+		if !isValidModel(model, validKeys[key].ModelList) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid request model"})
+			c.Abort()
+			return
+		}
+		c.Set("key", validKeys[key])
+		logger.Info("key info",
+			zap.String("key name", validKeys[key].KeyName),
+			zap.Int("user id", validKeys[key].UserId),
+			zap.Int("organization id", validKeys[key].OrganizationId),
+		)
+		c.Next()
+	}
+}
+
+func isValidModel(reqModel string, modelList auth.StringSlice) bool {
+	if modelList[0] == "*" {
+		return true
+	}
+	for _, model := range modelList {
+		if model == reqModel {
+			return true
+		}
+	}
+	return false
+}
+
+// background tasks
+
+func startBackgroundTasks(logger *zap.Logger) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	logger.Info("update key info")
+	updateKeyInfo()
+
+	for {
+		select {
+		case <-ticker.C:
+			logger.Info("Performing background task")
+			updateKeyInfo()
+			// todo: add runtime config update
+		}
+	}
+}
+
+func updateKeyInfo() {
+	keys := auth.GetAllValidKey()
+	mutex.Lock()
+	defer mutex.Unlock()
+	validKeys = make(map[string]auth.Key)
+	for _, key := range keys {
+		validKeys[key.KeyContent] = key
+	}
+	log.Println("Updated valid keys:", validKeys)
 }

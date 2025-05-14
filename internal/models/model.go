@@ -12,6 +12,6 @@ type ModelConfig struct {
 
 type ModelGroup struct {
 	Name     string        `yaml:"name"`     // 组名称
-	Models   []ModelConfig `yaml:"models"`   // 组内模型列表
 	Strategy string        `yaml:"strategy"` // 负载均衡策略 (round-robin, weighted)
+	Models   []ModelConfig `yaml:"models"`   // 组内模型列表
 }
