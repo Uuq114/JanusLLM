@@ -8,15 +8,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Uuq114/JanusLLM/internal/auth"
-	"github.com/Uuq114/JanusLLM/internal/db"
-	"github.com/Uuq114/JanusLLM/internal/models"
-	"github.com/Uuq114/JanusLLM/internal/proxy"
-	"github.com/Uuq114/JanusLLM/internal/spend"
 	"github.com/creasty/defaults"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
+
+	"github.com/Uuq114/JanusLLM/internal/auth"
+	"github.com/Uuq114/JanusLLM/internal/db"
+	"github.com/Uuq114/JanusLLM/internal/logQueue"
+	"github.com/Uuq114/JanusLLM/internal/models"
+	"github.com/Uuq114/JanusLLM/internal/proxy"
+	"github.com/Uuq114/JanusLLM/internal/spend"
 )
 
 var (
@@ -46,6 +48,7 @@ func main() {
 
 	r.Use(logReqHeadersMiddleware(logger))
 	r.Use(checkKeyMiddleware(logger))
+	r.Use(logSpendMiddleware(logger))
 
 	// routers
 	r.GET("/ping", func(c *gin.Context) {
@@ -113,6 +116,7 @@ func logReqHeadersMiddleware(logger *zap.Logger) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		c.Set("reqHeader", headers)
 		c.Set("reqBody", reqBody)
 		logger.Info("Request Headers",
 			zap.String("method", c.Request.Method),
@@ -156,6 +160,14 @@ func checkKeyMiddleware(logger *zap.Logger) gin.HandlerFunc {
 	}
 }
 
+func logSpendMiddleware(logger *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Next()
+		spend.CreateSpendRecord(c)
+		logger.Info("add request spend log to queue")
+	}
+}
+
 func isValidModel(reqModel string, modelList auth.StringSlice) bool {
 	if modelList[0] == "*" {
 		return true
@@ -181,8 +193,9 @@ func startBackgroundTasks(logger *zap.Logger) {
 		select {
 		case <-ticker.C:
 			logger.Info("Performing background task")
-			updateKeyInfo()
+			go updateKeyInfo()
 			// todo: add runtime config update
+			go logQueue.FlushLog()
 		}
 	}
 }

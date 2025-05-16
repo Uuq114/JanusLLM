@@ -8,10 +8,11 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/Uuq114/JanusLLM/internal/balancer"
 	"github.com/Uuq114/JanusLLM/internal/models"
-
-	"github.com/gin-gonic/gin"
+	"github.com/Uuq114/JanusLLM/internal/spend"
 )
 
 type Proxy struct {
@@ -110,6 +111,9 @@ func (p *Proxy) HandleRequest(c *gin.Context) {
 		return
 	}
 	defer resp.Body.Close()
+	// prepare spend log info
+	c.Set("upstreamResp", resp.Body)
+	go spend.CreateSpendRecord(c)
 	// copy response
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

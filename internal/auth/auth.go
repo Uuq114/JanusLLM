@@ -23,6 +23,10 @@ type Key struct {
 
 type StringSlice []string
 
+func ToString(s StringSlice) string {
+	return strings.Join(s, ",")
+}
+
 // handle model_list format change between text/[]string
 
 func (s *StringSlice) Scan(value interface{}) error {

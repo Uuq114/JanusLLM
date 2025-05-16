@@ -1,11 +1,17 @@
 package spend
 
 import (
+	"encoding/json"
+	"io"
 	"log"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/Uuq114/JanusLLM/internal/auth"
 	janusDb "github.com/Uuq114/JanusLLM/internal/db"
+	"github.com/Uuq114/JanusLLM/internal/logQueue"
+	"github.com/Uuq114/JanusLLM/internal/proxy"
 )
 
 var (
@@ -14,7 +20,7 @@ var (
 
 type SpendRecord struct {
 	RecordId         int       `gorm:"primaryKey;column:record_id"`
-	RequestId        int       `gorm:"column:request_id"`
+	RequestId        string    `gorm:"column:request_id"`
 	AuthKey          string    `gorm:"column:auth_key"`
 	UserId           int       `gorm:"column:user_id"`
 	OrganizationId   int       `gorm:"column:organization_id"`
@@ -26,10 +32,45 @@ type SpendRecord struct {
 	CreateTime       time.Time `gorm:"column:create_time"`
 }
 
-// CRUD
+type TokenUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
 
-func CreateSpendRecord(requestId int, authKey string, modelGroup string, totalTokens int,
-	promptTokens int, completionTokens int, createTime time.Time) {
+type UpstreamResp struct {
+	Id         string     `json:"id"`
+	CreateTime time.Time  `json:"create"`
+	Model      string     `json:"model"`
+	Object     string     `json:"object"`
+	Usage      TokenUsage `json:"usage"`
+}
+
+func CreateSpendRecord(c *gin.Context) {
+	var upstreamResp UpstreamResp
+	if err := json.NewDecoder(c.MustGet("upstreamResp").(io.Reader)).Decode(&upstreamResp); err != nil {
+		log.Fatal("Failed to decode upstream response:", err)
+		return
+	}
+	key := c.MustGet("key").(auth.Key)
+	model := c.MustGet("reqBody").(proxy.ChatReqBody).Model
+	spend := ModelPrice[model][0]*float64(upstreamResp.Usage.PromptTokens) +
+		ModelPrice[model][1]*float64(upstreamResp.Usage.CompletionTokens)
+	record := SpendRecord{
+		RequestId:        upstreamResp.Id,
+		AuthKey:          key.KeyContent,
+		UserId:           key.UserId,
+		OrganizationId:   key.OrganizationId,
+		ModelGroup:       auth.ToString(key.ModelList),
+		Spend:            spend,
+		TotalTokens:      upstreamResp.Usage.TotalTokens,
+		PromptTokens:     upstreamResp.Usage.PromptTokens,
+		CompletionTokens: upstreamResp.Usage.CompletionTokens,
+	}
+	logQueue.PushLog(record, "spend")
+}
+
+func InsertBatchSpendRecord(records []SpendRecord) {
 	db, err := janusDb.ConnectDatabase()
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
@@ -37,30 +78,8 @@ func CreateSpendRecord(requestId int, authKey string, modelGroup string, totalTo
 	}
 	defer janusDb.CloseDatabaseConnection(db)
 
-	var userId int
-	var organizationId int
-	keyRecord := auth.GetUserRecord(authKey)
-	if keyRecord != nil {
-		userId = keyRecord.UserId
-		organizationId = keyRecord.OrganizationId
-	}
-	spend := ModelPrice[modelGroup][0]*float64(promptTokens) + ModelPrice[modelGroup][1]*float64(completionTokens)
-
-	record := SpendRecord{
-		RequestId:        requestId,
-		AuthKey:          authKey,
-		UserId:           userId,
-		OrganizationId:   organizationId,
-		ModelGroup:       modelGroup,
-		Spend:            spend,
-		TotalTokens:      totalTokens,
-		PromptTokens:     promptTokens,
-		CompletionTokens: completionTokens,
-		CreateTime:       createTime,
-	}
-
-	if err := db.Create(&record).Error; err != nil {
-		log.Fatal("Failed to create spend record:", err)
+	if err := db.Create(&records).Error; err != nil {
+		log.Fatal("Failed to insert batch spend records:", err)
 	}
 }
 

@@ -1,30 +1,43 @@
 package logQueue
 
-import "github.com/Uuq114/JanusLLM/internal/spend"
+import (
+	"log"
 
-var (
-	SpendLogQueue = make(chan interface{}, 100)
+	"github.com/Uuq114/JanusLLM/internal/spend"
 )
 
-func PushLogQueue(log interface{}, logType string) {
+var (
+	SpendLogQueue = make(chan spend.SpendRecord, 100)
+)
+
+func PushLog(logRecord interface{}, logType string) {
 	switch logType {
 	case "spend":
-		SpendLogQueue <- log
+		SpendLogQueue <- logRecord.(spend.SpendRecord)
 	default:
 		log.Fatal("Unknown log type")
 	}
 }
 
-func FlushLogQueue() {
-	for _, log := range SpendLogQueue {
-		switch log.(type) {
-		case spend.SpendRecord:
-			spend.CreateSpendRecord(log.(spend.SpendRecord).RequestId, log.(spend.SpendRecord).AuthKey,
-				log.(spend.SpendRecord).ModelGroup, log.(spend.SpendRecord).TotalTokens,
-				log.(spend.SpendRecord).PromptTokens, log.(spend.SpendRecord).CompletionTokens,
-				log.(spend.SpendRecord).CreateTime)
+func FlushLog() {
+	var batch []spend.SpendRecord
+	for {
+		select {
+		case logRecord, ok := <-SpendLogQueue:
+			if !ok {
+				if len(batch) > 0 {
+					spend.InsertBatchSpendRecord(batch)
+					batch = nil
+				}
+				return
+			}
+			batch = append(batch, logRecord)
 		default:
-			log.Fatal("Unknown log type")
+			if len(batch) > 0 {
+				spend.InsertBatchSpendRecord(batch)
+				batch = nil
+			}
+			return
 		}
 	}
 }
