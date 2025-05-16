@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/Uuq114/JanusLLM/internal/auth"
+	"github.com/Uuq114/JanusLLM/internal/db"
 	"github.com/Uuq114/JanusLLM/internal/models"
 	"github.com/Uuq114/JanusLLM/internal/proxy"
+	"github.com/Uuq114/JanusLLM/internal/spend"
 	"github.com/creasty/defaults"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -81,7 +83,11 @@ func loadJanusConfig(path string) (*JanusConfig, error) {
 		return nil, err
 	}
 	// update db global var
-	auth.MysqlDsn = config.DatabaseUrl
+	janusDb.MysqlDsn = config.DatabaseUrl
+	// update model price
+	for _, group := range config.ModelGroups {
+		spend.ModelPrice[group.Name] = []float64{group.CostPerInputToken, group.CostPerOutputToken}
+	}
 	return &config, nil
 }
 
