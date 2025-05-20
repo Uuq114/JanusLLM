@@ -2,6 +2,8 @@ package auth
 
 import (
 	"log"
+
+	janusDb "github.com/Uuq114/JanusLLM/internal/db"
 )
 
 type Organization struct {
@@ -10,12 +12,12 @@ type Organization struct {
 }
 
 func CreateOrganizationRecord(name string) {
-	db, err := ConnectDatabase()
+	db, err := janusDb.ConnectDatabase()
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 		return
 	}
-	defer CloseDatabaseConnection(db)
+	defer janusDb.CloseDatabaseConnection(db)
 	result := db.Table("janus_auth_organization").Create(&Organization{OrganizationName: name})
 	if result.Error != nil {
 		log.Fatal("Failed to create organization record, err:", result.Error)
@@ -24,12 +26,12 @@ func CreateOrganizationRecord(name string) {
 }
 
 func GetOrganizationRecord(name string) *Organization {
-	db, err := ConnectDatabase()
+	db, err := janusDb.ConnectDatabase()
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 		return nil
 	}
-	defer CloseDatabaseConnection(db)
+	defer janusDb.CloseDatabaseConnection(db)
 	var organization Organization
 	result := db.Table("janus_auth_organization").Where("organization_name = ?", name).First(&organization)
 	if result.Error != nil {
@@ -40,12 +42,12 @@ func GetOrganizationRecord(name string) *Organization {
 }
 
 func UpdateOrganizationRecord(name string) {
-	db, err := ConnectDatabase()
+	db, err := janusDb.ConnectDatabase()
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 		return
 	}
-	defer CloseDatabaseConnection(db)
+	defer janusDb.CloseDatabaseConnection(db)
 	var organization Organization
 	result := db.Table("janus_auth_organization").Where("organization_name = ?", name).First(&organization)
 	if result.Error != nil {
@@ -59,12 +61,12 @@ func UpdateOrganizationRecord(name string) {
 	}
 }
 func DeleteOrganizationRecord(name string) {
-	db, err := ConnectDatabase()
+	db, err := janusDb.ConnectDatabase()
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 		return
 	}
-	defer CloseDatabaseConnection(db)
+	defer janusDb.CloseDatabaseConnection(db)
 	var organization Organization
 	result := db.Table("janus_auth_organization").Where("organization_name = ?", name).First(&organization)
 	if result.Error != nil {

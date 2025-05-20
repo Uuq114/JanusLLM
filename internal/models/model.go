@@ -11,7 +11,9 @@ type ModelConfig struct {
 }
 
 type ModelGroup struct {
-	Name     string        `yaml:"name"`     // 组名称
-	Strategy string        `yaml:"strategy"` // 负载均衡策略 (round-robin, weighted)
-	Models   []ModelConfig `yaml:"models"`   // 组内模型列表
+	Name               string        `yaml:"name"`                  // 组名称
+	Strategy           string        `yaml:"strategy"`              // 负载均衡策略 (round-robin, weighted)
+	Models             []ModelConfig `yaml:"models"`                // 组内模型列表
+	CostPerInputToken  float64       `yaml:"cost_per_input_token"`  // 输入token费用
+	CostPerOutputToken float64       `yaml:"cost_per_output_token"` // 输出token费用
 }

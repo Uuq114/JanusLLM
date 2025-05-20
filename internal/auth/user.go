@@ -1,6 +1,10 @@
 package auth
 
-import "log"
+import (
+	"log"
+
+	janusDb "github.com/Uuq114/JanusLLM/internal/db"
+)
 
 type User struct {
 	UserId         int    `gorm:"primaryKey;column:user_id"`
@@ -9,12 +13,12 @@ type User struct {
 }
 
 func CreateUserRecord(userName string, organizationName string) {
-	db, err := ConnectDatabase()
+	db, err := janusDb.ConnectDatabase()
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 		return
 	}
-	defer CloseDatabaseConnection(db)
+	defer janusDb.CloseDatabaseConnection(db)
 	organization := GetOrganizationRecord(organizationName)
 	if organization == nil {
 		log.Fatal("Organization record not found, name", organizationName)
@@ -28,12 +32,12 @@ func CreateUserRecord(userName string, organizationName string) {
 }
 
 func GetUserRecord(userName string) *User {
-	db, err := ConnectDatabase()
+	db, err := janusDb.ConnectDatabase()
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 		return nil
 	}
-	defer CloseDatabaseConnection(db)
+	defer janusDb.CloseDatabaseConnection(db)
 	var user User
 	result := db.Table("janus_auth_user").Where("user_name = ?", userName).First(&user)
 	if result.Error != nil {
@@ -46,12 +50,12 @@ func GetUserRecord(userName string) *User {
 // update user's organization, not username
 
 func UpdateUserRecord(userName string, organizationName string) {
-	db, err := ConnectDatabase()
+	db, err := janusDb.ConnectDatabase()
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 		return
 	}
-	defer CloseDatabaseConnection(db)
+	defer janusDb.CloseDatabaseConnection(db)
 	var user User
 	result := db.Table("janus_auth_user").Where("user_name = ?", userName).First(&user)
 	if result.Error != nil {
@@ -72,12 +76,12 @@ func UpdateUserRecord(userName string, organizationName string) {
 }
 
 func DeleteUserRecord(userName string) {
-	db, err := ConnectDatabase()
+	db, err := janusDb.ConnectDatabase()
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 		return
 	}
-	defer CloseDatabaseConnection(db)
+	defer janusDb.CloseDatabaseConnection(db)
 	var user User
 	result := db.Table("janus_auth_user").Where("user_name = ?", userName).First(&user)
 	if result.Error != nil {

@@ -8,13 +8,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Uuq114/JanusLLM/internal/auth"
-	"github.com/Uuq114/JanusLLM/internal/models"
-	"github.com/Uuq114/JanusLLM/internal/proxy"
+	"github.com/Uuq114/JanusLLM/internal/request"
 	"github.com/creasty/defaults"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
+
+	"github.com/Uuq114/JanusLLM/internal/auth"
+	"github.com/Uuq114/JanusLLM/internal/db"
+	"github.com/Uuq114/JanusLLM/internal/models"
+	"github.com/Uuq114/JanusLLM/internal/proxy"
+	"github.com/Uuq114/JanusLLM/internal/spend"
 )
 
 var (
@@ -44,6 +48,7 @@ func main() {
 
 	r.Use(logReqHeadersMiddleware(logger))
 	r.Use(checkKeyMiddleware(logger))
+	r.Use(logSpendMiddleware(logger))
 
 	// routers
 	r.GET("/ping", func(c *gin.Context) {
@@ -81,7 +86,11 @@ func loadJanusConfig(path string) (*JanusConfig, error) {
 		return nil, err
 	}
 	// update db global var
-	auth.MysqlDsn = config.DatabaseUrl
+	janusDb.MysqlDsn = config.DatabaseUrl
+	// update model price
+	for _, group := range config.ModelGroups {
+		spend.ModelPrice[group.Name] = []float64{group.CostPerInputToken, group.CostPerOutputToken}
+	}
 	return &config, nil
 }
 
@@ -96,7 +105,7 @@ func logReqHeadersMiddleware(logger *zap.Logger) gin.HandlerFunc {
 			"X-Request-ID": c.Request.Header.Get("X-Request-ID"),
 		}
 		// req body
-		var reqBody proxy.ChatReqBody
+		var reqBody request.ChatReqBody
 		if err := c.ShouldBindJSON(&reqBody); err != nil {
 			logger.Error("Failed to bind request body", zap.Error(err))
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -107,7 +116,9 @@ func logReqHeadersMiddleware(logger *zap.Logger) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		c.Set("reqHeader", headers)
 		c.Set("reqBody", reqBody)
+		c.Set("modelGroup", reqBody.Model)
 		logger.Info("Request Headers",
 			zap.String("method", c.Request.Method),
 			zap.String("url", c.Request.URL.String()),
@@ -134,7 +145,7 @@ func checkKeyMiddleware(logger *zap.Logger) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		model := c.MustGet("reqBody").(proxy.ChatReqBody).Model
+		model := c.MustGet("reqBody").(request.ChatReqBody).Model
 		if !isValidModel(model, validKeys[key].ModelList) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid request model"})
 			c.Abort()
@@ -147,6 +158,15 @@ func checkKeyMiddleware(logger *zap.Logger) gin.HandlerFunc {
 			zap.Int("organization id", validKeys[key].OrganizationId),
 		)
 		c.Next()
+	}
+}
+
+func logSpendMiddleware(logger *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		logger.Info("call log spend middleware")
+		c.Next()
+		spend.CreateSpendRecord(c, proxy.SpendLogQueue)
+		logger.Info("add request spend log to queue")
 	}
 }
 
@@ -175,8 +195,9 @@ func startBackgroundTasks(logger *zap.Logger) {
 		select {
 		case <-ticker.C:
 			logger.Info("Performing background task")
-			updateKeyInfo()
+			go updateKeyInfo()
 			// todo: add runtime config update
+			go FlushSpendLog(logger, proxy.SpendLogQueue)
 		}
 	}
 }
@@ -190,4 +211,29 @@ func updateKeyInfo() {
 		validKeys[key.KeyContent] = key
 	}
 	log.Println("Updated valid keys:", validKeys)
+}
+
+func FlushSpendLog(logger *zap.Logger, ch <-chan spend.SpendRecord) {
+	var batch []spend.SpendRecord
+	for {
+		select {
+		case logRecord, ok := <-ch:
+			if !ok {
+				if len(batch) > 0 {
+					logger.Info("Flushed spend log records to database", zap.Int("batch size", len(batch)))
+					spend.InsertBatchSpendRecord(batch)
+					batch = nil
+				}
+				return
+			}
+			batch = append(batch, logRecord)
+		default:
+			if len(batch) > 0 {
+				logger.Info("Flushed spend log records to database", zap.Int("batch size", len(batch)))
+				spend.InsertBatchSpendRecord(batch)
+				batch = nil
+			}
+			return
+		}
+	}
 }

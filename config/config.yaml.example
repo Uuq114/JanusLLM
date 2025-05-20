@@ -1,9 +1,11 @@
+database_url: "<user>:<password>@tcp(<host>:<port>)/<database>?charset=utf8mb4&parseTime=True&loc=Local"
+
 model_groups:
   - name: deepseek-v3
     strategy: round-robin
+    cost_per_input_token: 0.000001
+    cost_per_output_token: 0.000001
     models:
       - name: DeepSeek-V3-int8
         type: openai
         base_url: xx
-
-database_url: "<user>:<password>@tcp(<host>:<port>)/<database>?charset=utf8mb4&parseTime=True&loc=Local"

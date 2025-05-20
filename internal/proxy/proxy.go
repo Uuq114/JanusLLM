@@ -8,10 +8,16 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/Uuq114/JanusLLM/internal/balancer"
 	"github.com/Uuq114/JanusLLM/internal/models"
+	"github.com/Uuq114/JanusLLM/internal/request"
+	"github.com/Uuq114/JanusLLM/internal/spend"
+)
 
-	"github.com/gin-gonic/gin"
+var (
+	SpendLogQueue = make(chan spend.SpendRecord, 100)
 )
 
 type Proxy struct {
@@ -38,26 +44,11 @@ func (p *Proxy) RegisterModelGroup(group *models.ModelGroup) {
 	p.balancers[group.Name] = b
 }
 
-type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type ChatReqBody struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	DoSample    bool      `json:"do_sample" default:"true"`
-	Temperature float64   `json:"temperature" default:"0.7"`
-	TopP        float64   `json:"top_p" default:"1.0"`
-	MaxTokens   int       `json:"max_tokens" default:"4096"`
-	Stream      bool      `json:"stream" default:"false"`
-}
-
 func (p *Proxy) HandleRequest(c *gin.Context) {
 	// get model endpoint
-	reqModel := c.MustGet("reqBody").(ChatReqBody).Model
+	reqModel := c.MustGet("reqBody").(request.ChatReqBody).Model
 	balancer, exists := p.balancers[reqModel]
-	reqBody := c.MustGet("reqBody").(ChatReqBody)
+	reqBody := c.MustGet("reqBody").(request.ChatReqBody)
 	logger := c.MustGet("logger").(*zap.Logger)
 	logger.Debug("request body",
 		zap.String("model", reqModel),
@@ -78,7 +69,7 @@ func (p *Proxy) HandleRequest(c *gin.Context) {
 		return
 	}
 	// replace model name with upstream model
-	body := c.MustGet("reqBody").(ChatReqBody)
+	body := c.MustGet("reqBody").(request.ChatReqBody)
 	body.Model = upstreamModel.Name
 	c.Set("reqBody", body)
 	byteBody, err := json.Marshal(body)
@@ -110,12 +101,15 @@ func (p *Proxy) HandleRequest(c *gin.Context) {
 		return
 	}
 	defer resp.Body.Close()
-	// copy response
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	// prepare spend log info
+	c.Set("upstreamResp", respBody)
+	//go spend.CreateSpendRecord(c, SpendLogQueue)
+	// copy response
 	for key, values := range resp.Header {
 		for _, value := range values {
 			c.Header(key, value)
