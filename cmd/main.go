@@ -220,18 +220,18 @@ func FlushSpendLog(logger *zap.Logger, ch <-chan spend.SpendRecord) {
 		case logRecord, ok := <-ch:
 			if !ok {
 				if len(batch) > 0 {
+					logger.Info("Flushed spend log records to database", zap.Int("batch size", len(batch)))
 					spend.InsertBatchSpendRecord(batch)
 					batch = nil
-					logger.Info("Flushed spend log records to database", zap.Int("batch size", len(batch)))
 				}
 				return
 			}
 			batch = append(batch, logRecord)
 		default:
 			if len(batch) > 0 {
+				logger.Info("Flushed spend log records to database", zap.Int("batch size", len(batch)))
 				spend.InsertBatchSpendRecord(batch)
 				batch = nil
-				logger.Info("Flushed spend log records to database", zap.Int("batch size", len(batch)))
 			}
 			return
 		}
