@@ -166,6 +166,7 @@ func logSpendMiddleware(logger *zap.Logger) gin.HandlerFunc {
 		logger.Info("call log spend middleware")
 		c.Next()
 		spend.CreateSpendRecord(c, proxy.SpendLogQueue)
+		spend.CreateKeySpendRecord(c, proxy.KeySpendQueue[c.MustGet("key").(auth.Key).KeyContent])
 		logger.Info("add request spend log to queue")
 	}
 }
@@ -198,6 +199,7 @@ func startBackgroundTasks(logger *zap.Logger) {
 			go updateKeyInfo()
 			// todo: add runtime config update
 			go FlushSpendLog(logger, proxy.SpendLogQueue)
+			go FlushKeySpend(logger, proxy.KeySpendQueue)
 		}
 	}
 }
@@ -235,5 +237,30 @@ func FlushSpendLog(logger *zap.Logger, ch <-chan spend.SpendRecord) {
 			}
 			return
 		}
+	}
+}
+
+func FlushKeySpend(logger *zap.Logger, queue map[string]chan float64) {
+	for key, ch := range queue {
+		go func(key string, ch <-chan float64) {
+			totalSpend := 0.0
+			for {
+				select {
+				case spd, ok := <-ch:
+					if !ok {
+						if totalSpend > 0 {
+							spend.UpdateBatchKeySpendRecord(totalSpend, key)
+							logger.Info("Flushed key spend records to database",
+								zap.String("key", key),
+								zap.Float64("total spend", totalSpend))
+						}
+						return
+					}
+					totalSpend += spd
+				default:
+					return
+				}
+			}
+		}(key, ch)
 	}
 }

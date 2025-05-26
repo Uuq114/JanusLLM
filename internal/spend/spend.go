@@ -5,10 +5,10 @@ import (
 	"log"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/Uuq114/JanusLLM/internal/auth"
 	janusDb "github.com/Uuq114/JanusLLM/internal/db"
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 var (
@@ -43,6 +43,8 @@ type UpstreamResp struct {
 	Usage      TokenUsage `json:"usage"`
 }
 
+// spend log
+
 func CreateSpendRecord(c *gin.Context, ch chan<- SpendRecord) {
 	var upstreamResp UpstreamResp
 	if err := json.Unmarshal(c.MustGet("upstreamResp").([]byte), &upstreamResp); err != nil {
@@ -65,6 +67,7 @@ func CreateSpendRecord(c *gin.Context, ch chan<- SpendRecord) {
 		CompletionTokens: upstreamResp.Usage.CompletionTokens,
 		CreateTime:       time.Now(),
 	}
+	c.Set("spend", spend)
 	ch <- record
 }
 
@@ -96,4 +99,29 @@ func GetRangeSpendRecords(startTime time.Time, endTime time.Time) ([]SpendRecord
 	}
 
 	return records, nil
+}
+
+// update key balance
+
+func CreateKeySpendRecord(c *gin.Context, ch chan<- float64) {
+	spend := c.MustGet("spend").(float64)
+	if ch == nil {
+		ch = make(chan float64, 100)
+	}
+	ch <- spend
+}
+
+func UpdateBatchKeySpendRecord(totalSpend float64, key string) {
+	db, err := janusDb.ConnectDatabase()
+	if err != nil {
+		log.Fatal("Failed to connect to database:", err)
+		return
+	}
+	defer janusDb.CloseDatabaseConnection(db)
+
+	if err := db.Table("janus_auth_key").
+		Where("key_content = ?", key).
+		UpdateColumn("balance", gorm.Expr("balance - ?", totalSpend)).Error; err != nil {
+		log.Fatal("Failed to update key balance:", err)
+	}
 }

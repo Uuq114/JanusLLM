@@ -18,6 +18,7 @@ import (
 
 var (
 	SpendLogQueue = make(chan spend.SpendRecord, 100)
+	KeySpendQueue = make(map[string]chan float64)
 )
 
 type Proxy struct {

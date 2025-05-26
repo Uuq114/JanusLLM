@@ -17,8 +17,14 @@ type Key struct {
 	ModelList      StringSlice `gorm:"column:model_list"`
 	UserId         int         `gorm:"column:user_id"`
 	OrganizationId int         `gorm:"column:organization_id"`
-	CreateTime     time.Time   `gorm:"column:create_time"`
-	ExpireTime     time.Time   `gorm:"column:expire_time"`
+
+	Balance           float64 `gorm:"column:balance"`
+	TotalSpend        float64 `gorm:"column:total_spend"`
+	RequestPerMinute  int     `gorm:"column:request_per_minute"`   // 0 means unlimited
+	SpendLimitPerWeek float64 `gorm:"column:spend_limit_per_week"` // 0 means unlimited
+
+	CreateTime time.Time `gorm:"column:create_time"`
+	ExpireTime time.Time `gorm:"column:expire_time"`
 }
 
 type StringSlice []string
@@ -52,7 +58,8 @@ func (s *StringSlice) Value() (driver.Value, error) {
 
 // CRUD
 
-func CreateKeyRecord(keyContent string, keyName string, modelList []string, userName string, organizationName string) {
+func CreateKeyRecord(keyContent string, keyName string, modelList []string, userName string, organizationName string,
+	balance float64, tokenPerMinute int, requestPerMinute int, spendLimitPerWeek float64) {
 	db, err := janusDb.ConnectDatabase()
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
@@ -70,13 +77,18 @@ func CreateKeyRecord(keyContent string, keyName string, modelList []string, user
 		return
 	}
 	result := db.Table("janus_auth_key").Create(&Key{
-		KeyContent:     keyContent,
-		KeyName:        keyName,
-		ModelList:      modelList,
-		UserId:         user.UserId,
-		OrganizationId: organization.OrganizationId,
-		CreateTime:     time.Now(),
-		ExpireTime:     time.Now().Add(30 * 24 * time.Hour), // 30 days
+		KeyContent:        keyContent,
+		KeyName:           keyName,
+		ModelList:         modelList,
+		UserId:            user.UserId,
+		OrganizationId:    organization.OrganizationId,
+		Balance:           balance,
+		TotalSpend:        0,
+		TokenPerMinute:    tokenPerMinute,
+		RequestPerMinute:  requestPerMinute,
+		SpendLimitPerWeek: spendLimitPerWeek,
+		CreateTime:        time.Now(),
+		ExpireTime:        time.Now().Add(30 * 24 * time.Hour), // 30 days
 	})
 	if result.Error != nil {
 		log.Fatal("Failed to create key record, err:", result.Error)
@@ -112,7 +124,10 @@ func GetAllValidKey() []Key {
 	}
 	defer janusDb.CloseDatabaseConnection(db)
 	var keys []Key
-	result := db.Table("janus_auth_key").Where("expire_time > ? OR expire_time IS NULL", time.Now()).Find(&keys)
+	result := db.Table("janus_auth_key").
+		Where("balance > 0").
+		Where("expire_time > ? OR expire_time IS NULL", time.Now()).
+		Find(&keys)
 	if result.Error != nil {
 		log.Fatal("Failed to get all valid key record, err:", result.Error)
 		return nil
