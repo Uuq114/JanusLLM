@@ -59,7 +59,7 @@ func (s *StringSlice) Value() (driver.Value, error) {
 // CRUD
 
 func CreateKeyRecord(keyContent string, keyName string, modelList []string, userName string, organizationName string,
-	balance float64, tokenPerMinute int, requestPerMinute int, spendLimitPerWeek float64) {
+	balance float64, requestPerMinute int, spendLimitPerWeek float64) {
 	db, err := janusDb.ConnectDatabase()
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
@@ -84,7 +84,6 @@ func CreateKeyRecord(keyContent string, keyName string, modelList []string, user
 		OrganizationId:    organization.OrganizationId,
 		Balance:           balance,
 		TotalSpend:        0,
-		TokenPerMinute:    tokenPerMinute,
 		RequestPerMinute:  requestPerMinute,
 		SpendLimitPerWeek: spendLimitPerWeek,
 		CreateTime:        time.Now(),

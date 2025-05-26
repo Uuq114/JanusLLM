@@ -5,10 +5,11 @@ import (
 	"log"
 	"time"
 
-	"github.com/Uuq114/JanusLLM/internal/auth"
-	janusDb "github.com/Uuq114/JanusLLM/internal/db"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+
+	"github.com/Uuq114/JanusLLM/internal/auth"
+	janusDb "github.com/Uuq114/JanusLLM/internal/db"
 )
 
 var (
@@ -111,7 +112,7 @@ func CreateKeySpendRecord(c *gin.Context, ch chan<- float64) {
 	ch <- spend
 }
 
-func UpdateBatchKeySpendRecord(totalSpend float64, key string) {
+func UpdateKeySpendRecord(totalSpend float64, key string) {
 	db, err := janusDb.ConnectDatabase()
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)

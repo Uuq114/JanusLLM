@@ -8,11 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Uuq114/JanusLLM/internal/request"
 	"github.com/creasty/defaults"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
+
+	"github.com/Uuq114/JanusLLM/internal/request"
 
 	"github.com/Uuq114/JanusLLM/internal/auth"
 	"github.com/Uuq114/JanusLLM/internal/db"
@@ -140,17 +141,30 @@ func checkKeyMiddleware(logger *zap.Logger) gin.HandlerFunc {
 		key = strings.TrimPrefix(key, "Bearer ")
 		mutex.RLock()
 		defer mutex.RUnlock()
+		// is valid key
 		if _, ok := validKeys[key]; !ok {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization key"})
 			c.Abort()
 			return
 		}
+		// is valid model
 		model := c.MustGet("reqBody").(request.ChatReqBody).Model
 		if !isValidModel(model, validKeys[key].ModelList) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid request model"})
 			c.Abort()
 			return
 		}
+		// check rate limit
+		if _, ok := proxy.KeyRequestRing[key]; !ok {
+			rpm := validKeys[key].RequestPerMinute
+			proxy.KeyRequestRing[key] = proxy.NewRequestRing(1*time.Minute, rpm)
+		}
+		if !proxy.KeyRequestRing[key].Allow() {
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "Reach rate limit"})
+			c.Abort()
+			return
+		}
+
 		c.Set("key", validKeys[key])
 		logger.Info("key info",
 			zap.String("key name", validKeys[key].KeyName),
@@ -249,7 +263,7 @@ func FlushKeySpend(logger *zap.Logger, queue map[string]chan float64) {
 				case spd, ok := <-ch:
 					if !ok {
 						if totalSpend > 0 {
-							spend.UpdateBatchKeySpendRecord(totalSpend, key)
+							spend.UpdateKeySpendRecord(totalSpend, key)
 							logger.Info("Flushed key spend records to database",
 								zap.String("key", key),
 								zap.Float64("total spend", totalSpend))
