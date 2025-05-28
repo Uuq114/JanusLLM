@@ -17,7 +17,12 @@ import (
 )
 
 var (
+	// KeyRequestRing rate limit
+	KeyRequestRing = make(map[string]*RequestRing)
+
+	// SpendLogQueue KeySpendQueue spend log
 	SpendLogQueue = make(chan spend.SpendRecord, 100)
+	KeySpendQueue = make(map[string]chan float64)
 )
 
 type Proxy struct {
@@ -47,7 +52,7 @@ func (p *Proxy) RegisterModelGroup(group *models.ModelGroup) {
 func (p *Proxy) HandleRequest(c *gin.Context) {
 	// get model endpoint
 	reqModel := c.MustGet("reqBody").(request.ChatReqBody).Model
-	balancer, exists := p.balancers[reqModel]
+	blcr, exists := p.balancers[reqModel]
 	reqBody := c.MustGet("reqBody").(request.ChatReqBody)
 	logger := c.MustGet("logger").(*zap.Logger)
 	logger.Debug("request body",
@@ -63,7 +68,7 @@ func (p *Proxy) HandleRequest(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Model group not found"})
 		return
 	}
-	upstreamModel := balancer.Next()
+	upstreamModel := blcr.Next()
 	if upstreamModel == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "No available models"})
 		return
