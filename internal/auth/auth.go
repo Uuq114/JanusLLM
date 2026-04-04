@@ -20,8 +20,8 @@ type Key struct {
 
 	Balance           float64 `gorm:"column:balance"`
 	TotalSpend        float64 `gorm:"column:total_spend"`
-	RequestPerMinute  int     `gorm:"column:request_per_minute"`   // 0 means unlimited
-	SpendLimitPerWeek float64 `gorm:"column:spend_limit_per_week"` // 0 means unlimited
+	RequestPerMinute  int     `gorm:"column:request_per_minute"`
+	SpendLimitPerWeek float64 `gorm:"column:spend_limit_per_week"`
 
 	CreateTime time.Time `gorm:"column:create_time"`
 	ExpireTime time.Time `gorm:"column:expire_time"`
@@ -33,14 +33,12 @@ func ToString(s StringSlice) string {
 	return strings.Join(s, ",")
 }
 
-// handle model_list format change between text/[]string
-
 func (s *StringSlice) Scan(value interface{}) error {
 	if value == nil {
 		*s = nil
 		return nil
 	}
-	bytes, ok := value.([]uint8) // sql scan returns []uint8
+	bytes, ok := value.([]uint8)
 	if !ok {
 		return fmt.Errorf("unsupported data type: %T", value)
 	}
@@ -56,27 +54,27 @@ func (s *StringSlice) Value() (driver.Value, error) {
 	return strings.Join(*s, ","), nil
 }
 
-// CRUD
-
 func CreateKeyRecord(keyContent string, keyName string, modelList []string, userName string, organizationName string,
 	balance float64, requestPerMinute int, spendLimitPerWeek float64) {
 	db, err := janusDb.ConnectDatabase()
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
+		log.Printf("CreateKeyRecord: connect database failed: %v", err)
 		return
 	}
 	defer janusDb.CloseDatabaseConnection(db)
+
 	user := GetUserRecord(userName)
 	if user == nil {
-		log.Fatal("User record not found, name", userName)
+		log.Printf("CreateKeyRecord: user record not found: %s", userName)
 		return
 	}
 	organization := GetOrganizationRecord(organizationName)
 	if organization == nil {
-		log.Fatal("Organization record not found, name", organizationName)
+		log.Printf("CreateKeyRecord: organization record not found: %s", organizationName)
 		return
 	}
-	result := db.Table("janus_auth_key").Create(&Key{
+
+	result := db.Table("janus_auth_key").Omit("create_time").Create(&Key{
 		KeyContent:        keyContent,
 		KeyName:           keyName,
 		ModelList:         modelList,
@@ -86,30 +84,29 @@ func CreateKeyRecord(keyContent string, keyName string, modelList []string, user
 		TotalSpend:        0,
 		RequestPerMinute:  requestPerMinute,
 		SpendLimitPerWeek: spendLimitPerWeek,
-		CreateTime:        time.Now(),
-		ExpireTime:        time.Now().Add(30 * 24 * time.Hour), // 30 days
+		ExpireTime:        time.Now().Add(30 * 24 * time.Hour),
 	})
 	if result.Error != nil {
-		log.Fatal("Failed to create key record, err:", result.Error)
-		return
+		log.Printf("CreateKeyRecord: create failed: %v", result.Error)
 	}
 }
 
 func CheckKeyRecord(keyContent string) bool {
 	db, err := janusDb.ConnectDatabase()
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
+		log.Printf("CheckKeyRecord: connect database failed: %v", err)
 		return false
 	}
 	defer janusDb.CloseDatabaseConnection(db)
+
 	var key Key
 	result := db.Table("janus_auth_key").Where("key_content = ?", keyContent).First(&key)
 	if result.Error != nil {
-		log.Fatal("Failed to get key record, err:", result.Error)
+		log.Printf("CheckKeyRecord: query failed: %v", result.Error)
 		return false
 	}
 	if key.ExpireTime.Before(time.Now()) {
-		log.Println("Key expired")
+		log.Printf("CheckKeyRecord: key expired")
 		return false
 	}
 	return true
@@ -118,34 +115,33 @@ func CheckKeyRecord(keyContent string) bool {
 func GetAllValidKey() []Key {
 	db, err := janusDb.ConnectDatabase()
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
+		log.Printf("GetAllValidKey: connect database failed: %v", err)
 		return nil
 	}
 	defer janusDb.CloseDatabaseConnection(db)
+
 	var keys []Key
 	result := db.Table("janus_auth_key").
 		Where("balance > 0").
 		Where("expire_time > ? OR expire_time IS NULL", time.Now()).
 		Find(&keys)
 	if result.Error != nil {
-		log.Fatal("Failed to get all valid key record, err:", result.Error)
+		log.Printf("GetAllValidKey: query failed: %v", result.Error)
 		return nil
 	}
 	return keys
 }
 
-// key is not updatable, UpdateKeyRecord() is deleted
-
 func DeleteKeyRecord(keyContent string) {
 	db, err := janusDb.ConnectDatabase()
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
+		log.Printf("DeleteKeyRecord: connect database failed: %v", err)
 		return
 	}
 	defer janusDb.CloseDatabaseConnection(db)
+
 	result := db.Table("janus_auth_key").Where("key_content = ?", keyContent).Delete(&Key{})
 	if result.Error != nil {
-		log.Fatal("Failed to delete key record, err:", result.Error)
-		return
+		log.Printf("DeleteKeyRecord: delete failed: %v", result.Error)
 	}
 }

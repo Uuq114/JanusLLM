@@ -7,16 +7,15 @@ import (
 	"github.com/Uuq114/JanusLLM/internal/models"
 )
 
-// balancer
-
+// Balancer chooses one upstream model endpoint for each request.
 type Balancer interface {
 	Next() *models.ModelConfig
 	AddModel(model *models.ModelConfig)
 	RemoveModel(modelName string)
+	Size() int
 }
 
-// round-robin balancer
-
+// RoundRobinBalancer picks endpoints in order.
 type RoundRobinBalancer struct {
 	models []*models.ModelConfig
 	index  uint64
@@ -59,8 +58,13 @@ func (rb *RoundRobinBalancer) RemoveModel(modelName string) {
 	}
 }
 
-// weighted balancer
+func (rb *RoundRobinBalancer) Size() int {
+	rb.mu.RLock()
+	defer rb.mu.RUnlock()
+	return len(rb.models)
+}
 
+// WeightedBalancer picks endpoints by configured weight.
 type WeightedBalancer struct {
 	models []*models.ModelConfig
 	index  uint64
@@ -81,16 +85,16 @@ func (wb *WeightedBalancer) Next() *models.ModelConfig {
 		return nil
 	}
 
-	// 计算总权重
 	totalWeight := 0
 	for _, model := range wb.models {
 		totalWeight += model.Weight
 	}
+	if totalWeight <= 0 {
+		index := atomic.AddUint64(&wb.index, 1) % uint64(len(wb.models))
+		return wb.models[index]
+	}
 
-	// 使用原子操作获取下一个索引
 	index := atomic.AddUint64(&wb.index, 1)
-
-	// 根据权重选择模型
 	currentWeight := 0
 	for _, model := range wb.models {
 		currentWeight += model.Weight
@@ -118,4 +122,10 @@ func (wb *WeightedBalancer) RemoveModel(modelName string) {
 			break
 		}
 	}
+}
+
+func (wb *WeightedBalancer) Size() int {
+	wb.mu.RLock()
+	defer wb.mu.RUnlock()
+	return len(wb.models)
 }

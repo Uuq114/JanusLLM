@@ -3,7 +3,6 @@ module github.com/Uuq114/JanusLLM
 go 1.24.3
 
 require (
-	github.com/creasty/defaults v1.8.0
 	github.com/gin-gonic/gin v1.10.0
 	go.uber.org/zap v1.27.0
 	gopkg.in/yaml.v3 v3.0.1

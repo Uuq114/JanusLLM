@@ -1,191 +1,348 @@
 package main
 
 import (
+	"bytes"
+	"errors"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/creasty/defaults"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"gopkg.in/yaml.v3"
 
-	"github.com/Uuq114/JanusLLM/internal/request"
-
 	"github.com/Uuq114/JanusLLM/internal/auth"
-	"github.com/Uuq114/JanusLLM/internal/db"
+	janusDb "github.com/Uuq114/JanusLLM/internal/db"
 	"github.com/Uuq114/JanusLLM/internal/models"
 	"github.com/Uuq114/JanusLLM/internal/proxy"
+	"github.com/Uuq114/JanusLLM/internal/request"
 	"github.com/Uuq114/JanusLLM/internal/spend"
 )
 
 var (
 	validKeys = make(map[string]auth.Key)
 	mutex     sync.RWMutex
+
+	modelGroupSet = make(map[string]struct{})
 )
 
 func main() {
-	logger, _ := zap.NewProduction()
-	defer logger.Sync()
 	config, err := loadJanusConfig("../config/config.yaml")
 	if err != nil {
-		logger.Error("Failed to load config", zap.Error(err))
+		log.Fatalf("Failed to load config: %v", err)
 	}
+	logger := buildLogger(config.Service.LogLevel)
+	defer logger.Sync()
 
-	// setup proxy
 	p := proxy.NewProxy()
-	for _, group := range config.ModelGroups {
+	for _, group := range config.Models.ModelGroups {
 		p.RegisterModelGroup(&group)
+		modelGroupSet[group.Name] = struct{}{}
 		logger.Info("Registered model group", zap.String("name", group.Name))
 	}
 
-	// init
 	r := gin.Default()
-
 	go startBackgroundTasks(logger)
 
-	r.Use(logReqHeadersMiddleware(logger))
-	r.Use(checkKeyMiddleware(logger))
-	r.Use(logSpendMiddleware(logger))
-
-	// routers
 	r.GET("/ping", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "pong",
-		})
+		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
+
 	api := r.Group("/v1")
+	api.Use(logReqHeadersMiddleware(logger))
+	api.Use(checkKeyMiddleware(logger))
+	api.Use(logSpendMiddleware(logger))
 	{
 		api.POST("/chat/completions", p.HandleRequest)
-		//api.POST("/completions", p.HandleRequest)
-		//api.POST("/embeddings", p.HandleRequest)
+		api.POST("/completions", p.HandleRequest)
+		api.POST("/embeddings", p.HandleRequest)
+		api.POST("/messages", p.HandleRequest)
+		api.GET("/models", p.HandleListModels)
 	}
 
-	// run server
-	if err := r.Run(":8080"); err != nil {
+	if err := r.Run(":" + strconv.Itoa(config.Service.Port)); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
 
-// structs
+type ServiceConfig struct {
+	Port     int    `yaml:"port"`
+	LogLevel string `yaml:"log_level"`
+}
+
+type ModelsConfig struct {
+	ModelGroups []models.ModelGroup `yaml:"model_groups"`
+}
+
+type SecretsConfig struct {
+	DatabaseURL string `yaml:"database_url"`
+}
 
 type JanusConfig struct {
-	ModelGroups []models.ModelGroup `yaml:"model_groups"`
-	DatabaseUrl string              `yaml:"database_url"`
+	Service ServiceConfig `yaml:"service"`
+	Models  ModelsConfig  `yaml:"models"`
+	Secrets SecretsConfig `yaml:"secrets"`
+
+	LegacyModelGroups []models.ModelGroup `yaml:"model_groups"`
+	LegacyDatabaseURL string              `yaml:"database_url"`
 }
 
 func loadJanusConfig(path string) (*JanusConfig, error) {
-	file, err := os.ReadFile(path)
+	paths := []string{path, "config/config.yaml"}
+	var file []byte
+	var err error
+
+	for _, configPath := range paths {
+		file, err = os.ReadFile(configPath)
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
+
 	var config JanusConfig
 	if err := yaml.Unmarshal(file, &config); err != nil {
 		return nil, err
 	}
-	// update db global var
-	janusDb.MysqlDsn = config.DatabaseUrl
-	// update model price
-	for _, group := range config.ModelGroups {
+
+	if len(config.Models.ModelGroups) == 0 && len(config.LegacyModelGroups) > 0 {
+		config.Models.ModelGroups = config.LegacyModelGroups
+	}
+	if config.Secrets.DatabaseURL == "" && config.LegacyDatabaseURL != "" {
+		config.Secrets.DatabaseURL = config.LegacyDatabaseURL
+	}
+
+	if config.Service.Port == 0 {
+		config.Service.Port = 8080
+	}
+	if config.Service.LogLevel == "" {
+		config.Service.LogLevel = "info"
+	}
+
+	if dbURL := strings.TrimSpace(os.Getenv("JANUS_DATABASE_URL")); dbURL != "" {
+		config.Secrets.DatabaseURL = dbURL
+	}
+	if strings.TrimSpace(config.Secrets.DatabaseURL) == "" {
+		return nil, errors.New("database_url is empty; set secrets.database_url or JANUS_DATABASE_URL")
+	}
+
+	janusDb.MysqlDsn = config.Secrets.DatabaseURL
+	for _, group := range config.Models.ModelGroups {
 		spend.ModelPrice[group.Name] = []float64{group.CostPerInputToken, group.CostPerOutputToken}
 	}
 	return &config, nil
 }
 
-// middlewares
+func buildLogger(level string) *zap.Logger {
+	cfg := zap.NewProductionConfig()
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "debug":
+		cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
+	case "warn", "warning":
+		cfg.Level = zap.NewAtomicLevelAt(zapcore.WarnLevel)
+	case "error":
+		cfg.Level = zap.NewAtomicLevelAt(zapcore.ErrorLevel)
+	default:
+		cfg.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
+	}
+	logger, err := cfg.Build()
+	if err != nil {
+		fallback, _ := zap.NewProduction()
+		return fallback
+	}
+	return logger
+}
 
 func logReqHeadersMiddleware(logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Set("logger", logger)
-		// req headers
+		c.Set("requestStart", time.Now())
+
 		headers := map[string]string{
 			"User-Agent":   c.Request.UserAgent(),
 			"X-Request-ID": c.Request.Header.Get("X-Request-ID"),
 		}
-		// req body
-		var reqBody request.ChatReqBody
-		if err := c.ShouldBindJSON(&reqBody); err != nil {
-			logger.Error("Failed to bind request body", zap.Error(err))
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		if err := defaults.Set(&reqBody); err != nil {
-			logger.Error("Failed to set default values", zap.Error(err))
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
 		c.Set("reqHeader", headers)
-		c.Set("reqBody", reqBody)
-		c.Set("modelGroup", reqBody.Model)
-		logger.Info("Request Headers",
+
+		rawBody := []byte{}
+		if c.Request.Method != http.MethodGet {
+			body, err := ioReadAll(c)
+			if err != nil {
+				logger.Error("Failed to read request body", zap.Error(err))
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				c.Abort()
+				return
+			}
+			rawBody = body
+		}
+		c.Set("rawBody", rawBody)
+
+		modelName, stream, err := request.ExtractModelAndStream(rawBody)
+		if err != nil {
+			logger.Error("Failed to parse request body", zap.Error(err))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			c.Abort()
+			return
+		}
+		if modelName != "" {
+			c.Set("modelGroup", modelName)
+		}
+		c.Set("isStreamRequest", stream)
+
+		if requiresModel(c.Request.URL.Path) && modelName == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "model is required"})
+			c.Abort()
+			return
+		}
+
+		logger.Info("Request accepted",
 			zap.String("method", c.Request.Method),
 			zap.String("url", c.Request.URL.String()),
 			zap.Any("headers", headers),
-			zap.String("model", reqBody.Model),
+			zap.String("model", modelName),
 		)
 		c.Next()
 	}
+}
+
+func ioReadAll(c *gin.Context) ([]byte, error) {
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return nil, err
+	}
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
+	return body, nil
 }
 
 func checkKeyMiddleware(logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		key := c.Request.Header.Get("Authorization")
-		if key == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "No authorization header"})
+		keyContent := c.Request.Header.Get("Authorization")
+		if keyContent == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "no authorization header"})
 			c.Abort()
 			return
 		}
-		key = strings.TrimPrefix(key, "Bearer ")
+		keyContent = strings.TrimPrefix(keyContent, "Bearer ")
+
 		mutex.RLock()
-		defer mutex.RUnlock()
-		// is valid key
-		if _, ok := validKeys[key]; !ok {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization key"})
-			c.Abort()
-			return
-		}
-		// is valid model
-		model := c.MustGet("reqBody").(request.ChatReqBody).Model
-		if !isValidModel(model, validKeys[key].ModelList) {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid request model"})
-			c.Abort()
-			return
-		}
-		// check rate limit
-		if _, ok := proxy.KeyRequestRing[key]; !ok {
-			rpm := validKeys[key].RequestPerMinute
-			proxy.KeyRequestRing[key] = proxy.NewRequestRing(1*time.Minute, rpm)
-		}
-		if !proxy.KeyRequestRing[key].Allow() {
-			c.JSON(http.StatusTooManyRequests, gin.H{"error": "Reach rate limit"})
+		keyInfo, ok := validKeys[keyContent]
+		mutex.RUnlock()
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization key"})
 			c.Abort()
 			return
 		}
 
-		c.Set("key", validKeys[key])
-		logger.Info("key info",
-			zap.String("key name", validKeys[key].KeyName),
-			zap.Int("user id", validKeys[key].UserId),
-			zap.Int("organization id", validKeys[key].OrganizationId),
+		if keyInfo.RequestPerMinute > 0 {
+			ring := proxy.GetOrCreateRequestRing(keyContent, keyInfo.RequestPerMinute)
+			if ring != nil && !ring.Allow() {
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": "reach rate limit"})
+				c.Abort()
+				return
+			}
+		}
+
+		c.Set("key", keyInfo)
+		if c.Request.URL.Path == "/v1/models" {
+			logger.Info("Key authorized",
+				zap.String("key name", keyInfo.KeyName),
+				zap.Int("user id", keyInfo.UserId),
+				zap.Int("organization id", keyInfo.OrganizationId),
+			)
+			c.Next()
+			return
+		}
+
+		modelGroup, err := resolveModelGroup(c)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+			c.Abort()
+			return
+		}
+		c.Set("modelGroup", modelGroup)
+
+		if !isValidModel(modelGroup, keyInfo.ModelList) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid request model"})
+			c.Abort()
+			return
+		}
+
+		logger.Info("Key authorized",
+			zap.String("key name", keyInfo.KeyName),
+			zap.Int("user id", keyInfo.UserId),
+			zap.Int("organization id", keyInfo.OrganizationId),
 		)
 		c.Next()
 	}
 }
 
+func resolveModelGroup(c *gin.Context) (string, error) {
+	if modelValue, ok := c.Get("modelGroup"); ok {
+		if modelName, ok := modelValue.(string); ok && modelName != "" {
+			if _, exists := modelGroupSet[modelName]; !exists {
+				return "", errors.New("model group not configured")
+			}
+			return modelName, nil
+		}
+	}
+	return "", errors.New("model is required")
+}
+
 func logSpendMiddleware(logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		logger.Info("call log spend middleware")
 		c.Next()
+
+		if c.Request.URL.Path == "/v1/models" {
+			return
+		}
+
+		if skip, ok := c.Get("skipSpend"); ok {
+			if skipBool, ok := skip.(bool); ok && skipBool {
+				return
+			}
+		}
+		if _, ok := c.Get("upstreamResp"); !ok {
+			return
+		}
+		key, ok := c.Get("key")
+		if !ok {
+			return
+		}
+
 		spend.CreateSpendRecord(c, proxy.SpendLogQueue)
-		spend.CreateKeySpendRecord(c, proxy.KeySpendQueue[c.MustGet("key").(auth.Key).KeyContent])
-		logger.Info("add request spend log to queue")
+		keyInfo := key.(auth.Key)
+		keySpendQueue := proxy.GetOrCreateKeySpendQueue(keyInfo.KeyContent)
+		spend.CreateKeySpendRecord(c, keySpendQueue)
+
+		if start, ok := c.Get("requestStart"); ok {
+			if startTime, ok := start.(time.Time); ok {
+				logger.Info("Request spend queued", zap.Duration("latency", time.Since(startTime)))
+			}
+		}
+	}
+}
+
+func requiresModel(path string) bool {
+	switch path {
+	case "/v1/chat/completions", "/v1/completions", "/v1/embeddings", "/v1/messages":
+		return true
+	default:
+		return false
 	}
 }
 
 func isValidModel(reqModel string, modelList auth.StringSlice) bool {
+	if len(modelList) == 0 {
+		return false
+	}
 	if modelList[0] == "*" {
 		return true
 	}
@@ -197,13 +354,11 @@ func isValidModel(reqModel string, modelList auth.StringSlice) bool {
 	return false
 }
 
-// background tasks
-
 func startBackgroundTasks(logger *zap.Logger) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
-	logger.Info("update key info")
+	logger.Info("Updating key info at startup")
 	updateKeyInfo()
 
 	for {
@@ -211,9 +366,8 @@ func startBackgroundTasks(logger *zap.Logger) {
 		case <-ticker.C:
 			logger.Info("Performing background task")
 			go updateKeyInfo()
-			// todo: add runtime config update
 			go FlushSpendLog(logger, proxy.SpendLogQueue)
-			go FlushKeySpend(logger, proxy.KeySpendQueue)
+			go FlushKeySpend(logger, proxy.SnapshotKeySpendQueue())
 		}
 	}
 }
@@ -226,7 +380,7 @@ func updateKeyInfo() {
 	for _, key := range keys {
 		validKeys[key.KeyContent] = key
 	}
-	log.Println("Updated valid keys:", validKeys)
+	log.Printf("Updated valid keys: %d", len(validKeys))
 }
 
 func FlushSpendLog(logger *zap.Logger, ch <-chan spend.SpendRecord) {
@@ -236,18 +390,16 @@ func FlushSpendLog(logger *zap.Logger, ch <-chan spend.SpendRecord) {
 		case logRecord, ok := <-ch:
 			if !ok {
 				if len(batch) > 0 {
-					logger.Info("Flushed spend log records to database", zap.Int("batch size", len(batch)))
 					spend.InsertBatchSpendRecord(batch)
-					batch = nil
+					logger.Info("Flushed spend log records to database", zap.Int("batch size", len(batch)))
 				}
 				return
 			}
 			batch = append(batch, logRecord)
 		default:
 			if len(batch) > 0 {
-				logger.Info("Flushed spend log records to database", zap.Int("batch size", len(batch)))
 				spend.InsertBatchSpendRecord(batch)
-				batch = nil
+				logger.Info("Flushed spend log records to database", zap.Int("batch size", len(batch)))
 			}
 			return
 		}
@@ -256,25 +408,22 @@ func FlushSpendLog(logger *zap.Logger, ch <-chan spend.SpendRecord) {
 
 func FlushKeySpend(logger *zap.Logger, queue map[string]chan float64) {
 	for key, ch := range queue {
-		go func(key string, ch <-chan float64) {
-			totalSpend := 0.0
-			for {
-				select {
-				case spd, ok := <-ch:
-					if !ok {
-						if totalSpend > 0 {
-							spend.UpdateKeySpendRecord(totalSpend, key)
-							logger.Info("Flushed key spend records to database",
-								zap.String("key", key),
-								zap.Float64("total spend", totalSpend))
-						}
-						return
-					}
-					totalSpend += spd
-				default:
-					return
+		totalSpend := 0.0
+		for {
+			select {
+			case spd := <-ch:
+				totalSpend += spd
+			default:
+				if totalSpend > 0 {
+					spend.UpdateKeySpendRecord(totalSpend, key)
+					logger.Info("Flushed key spend records to database",
+						zap.String("key", key),
+						zap.Float64("total spend", totalSpend),
+					)
 				}
+				goto nextKey
 			}
-		}(key, ch)
+		}
+	nextKey:
 	}
 }

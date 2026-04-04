@@ -11,19 +11,33 @@ type RequestRing struct {
 	bufferSize  int
 	ring        []time.Time
 	writePos    int
+	unlimited   bool
 	mu          sync.RWMutex
 }
 
 func NewRequestRing(window time.Duration, maxRequests int) *RequestRing {
+	if maxRequests <= 0 {
+		return &RequestRing{
+			window:      window,
+			maxRequests: 0,
+			bufferSize:  0,
+			unlimited:   true,
+		}
+	}
+
 	return &RequestRing{
 		window:      window,
 		maxRequests: maxRequests,
-		bufferSize:  maxRequests + 10, // 多预留一点防止边界问题
+		bufferSize:  maxRequests + 10,
 		ring:        make([]time.Time, maxRequests+10),
 	}
 }
 
 func (r *RequestRing) Allow() bool {
+	if r.unlimited {
+		return true
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
