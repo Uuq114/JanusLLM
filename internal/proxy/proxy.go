@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -120,14 +121,16 @@ func GetOrCreateRequestRing(key string, rpm int) *RequestRing {
 	keyRequestRingMu.RLock()
 	ring, ok := keyRequestRing[key]
 	keyRequestRingMu.RUnlock()
-	if ok {
+	if ok && ring != nil && ring.maxRequests == rpm {
 		return ring
 	}
 
 	keyRequestRingMu.Lock()
 	defer keyRequestRingMu.Unlock()
 	if existing, exists := keyRequestRing[key]; exists {
-		return existing
+		if existing != nil && existing.maxRequests == rpm {
+			return existing
+		}
 	}
 	created := NewRequestRing(1*time.Minute, rpm)
 	keyRequestRing[key] = created
@@ -243,24 +246,30 @@ func (p *Proxy) forwardOnce(c *gin.Context, endpointPath string, modelGroup stri
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode >= http.StatusInternalServerError {
+		respBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return http.StatusBadGateway, true, readErr
+		}
+		return resp.StatusCode, true, fmt.Errorf("upstream status %d: %s", resp.StatusCode, truncateBody(respBody))
+	}
+
 	if shouldStream(c, resp) {
 		copyResponseHeaders(c, resp.Header)
 		c.Status(resp.StatusCode)
-		streamErr := streamToClient(c, resp.Body)
+		streamUsage, streamErr := streamToClient(c, resp.Body)
 		if streamErr != nil {
 			return http.StatusBadGateway, true, streamErr
 		}
-		c.Set("skipSpend", true)
+		if len(streamUsage) > 0 {
+			c.Set("upstreamResp", streamUsage)
+		}
 		return resp.StatusCode, false, nil
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return http.StatusBadGateway, true, err
-	}
-
-	if resp.StatusCode >= http.StatusInternalServerError {
-		return resp.StatusCode, true, fmt.Errorf("upstream status %d: %s", resp.StatusCode, truncateBody(respBody))
 	}
 
 	copyResponseHeaders(c, resp.Header)
@@ -280,36 +289,81 @@ func (p *Proxy) forwardOnce(c *gin.Context, endpointPath string, modelGroup stri
 }
 
 func shouldStream(c *gin.Context, resp *http.Response) bool {
+	if !isSSEStreamResponse(resp.Header) {
+		return false
+	}
 	if streamFlag, ok := c.Get("isStreamRequest"); ok {
-		if isStream, ok := streamFlag.(bool); ok && isStream {
-			return true
+		if isStream, ok := streamFlag.(bool); ok {
+			return isStream
 		}
 	}
-	return strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream")
+	return false
 }
 
-func streamToClient(c *gin.Context, body io.Reader) error {
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		_, err := io.Copy(c.Writer, body)
-		return err
-	}
+func streamToClient(c *gin.Context, body io.Reader) ([]byte, error) {
+	flusher, _ := c.Writer.(http.Flusher)
+	reader := bufio.NewReader(body)
+	var requestID string
+	var usage *spend.TokenUsage
 
-	buf := make([]byte, 32*1024)
 	for {
-		n, err := body.Read(buf)
-		if n > 0 {
-			if _, writeErr := c.Writer.Write(buf[:n]); writeErr != nil {
-				return writeErr
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			if _, writeErr := c.Writer.Write(line); writeErr != nil {
+				return nil, writeErr
 			}
-			flusher.Flush()
+			if flusher != nil {
+				flusher.Flush()
+			}
+			parseSSEUsageLine(line, &requestID, &usage)
 		}
 		if err == io.EOF {
-			return nil
+			break
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
+	}
+
+	if usage == nil {
+		return nil, nil
+	}
+
+	payload, err := json.Marshal(spend.UpstreamResp{
+		Id:    requestID,
+		Usage: *usage,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func parseSSEUsageLine(line []byte, requestID *string, usage **spend.TokenUsage) {
+	trimmed := strings.TrimSpace(string(line))
+	if trimmed == "" || !strings.HasPrefix(trimmed, "data:") {
+		return
+	}
+
+	data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+	if data == "" || data == "[DONE]" {
+		return
+	}
+
+	var chunk struct {
+		ID    string            `json:"id"`
+		Usage *spend.TokenUsage `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		return
+	}
+
+	if chunk.ID != "" {
+		*requestID = chunk.ID
+	}
+	if chunk.Usage != nil {
+		copied := *chunk.Usage
+		*usage = &copied
 	}
 }
 
@@ -331,6 +385,10 @@ func contentType(headers http.Header) string {
 
 func isJSONResponse(headers http.Header) bool {
 	return strings.Contains(strings.ToLower(headers.Get("Content-Type")), "application/json")
+}
+
+func isSSEStreamResponse(headers http.Header) bool {
+	return strings.Contains(strings.ToLower(headers.Get("Content-Type")), "text/event-stream")
 }
 
 func truncateBody(body []byte) string {

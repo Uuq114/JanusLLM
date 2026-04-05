@@ -137,7 +137,10 @@ func UpdateKeySpendRecord(totalSpend float64, key string) {
 
 	if err := db.Table("janus_auth_key").
 		Where("key_content = ?", key).
-		UpdateColumn("balance", gorm.Expr("balance - ?", totalSpend)).Error; err != nil {
+		Updates(map[string]interface{}{
+			"balance":     gorm.Expr("balance - ?", totalSpend),
+			"total_spend": gorm.Expr("total_spend + ?", totalSpend),
+		}).Error; err != nil {
 		log.Printf("UpdateKeySpendRecord: update failed: %v", err)
 	}
 }

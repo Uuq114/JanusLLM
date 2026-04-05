@@ -304,11 +304,6 @@ func logSpendMiddleware(logger *zap.Logger) gin.HandlerFunc {
 			return
 		}
 
-		if skip, ok := c.Get("skipSpend"); ok {
-			if skipBool, ok := skip.(bool); ok && skipBool {
-				return
-			}
-		}
 		if _, ok := c.Get("upstreamResp"); !ok {
 			return
 		}
@@ -411,7 +406,17 @@ func FlushKeySpend(logger *zap.Logger, queue map[string]chan float64) {
 		totalSpend := 0.0
 		for {
 			select {
-			case spd := <-ch:
+			case spd, ok := <-ch:
+				if !ok {
+					if totalSpend > 0 {
+						spend.UpdateKeySpendRecord(totalSpend, key)
+						logger.Info("Flushed key spend records to database",
+							zap.String("key", key),
+							zap.Float64("total spend", totalSpend),
+						)
+					}
+					goto nextKey
+				}
 				totalSpend += spd
 			default:
 				if totalSpend > 0 {
