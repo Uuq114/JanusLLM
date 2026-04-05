@@ -26,11 +26,22 @@ import (
 )
 
 var (
-	validKeys = make(map[string]auth.Key)
+	validKeys = make(map[string]cachedKey)
 	mutex     sync.RWMutex
 
 	modelGroupSet = make(map[string]struct{})
 )
+
+const (
+	keyCacheSyncTTL = 3 * time.Minute
+	keyCacheIdleTTL = 30 * time.Minute
+)
+
+type cachedKey struct {
+	Key          auth.Key
+	LastSyncAt   time.Time
+	LastAccessAt time.Time
+}
 
 func main() {
 	config, err := loadJanusConfig("../config/config.yaml")
@@ -232,9 +243,13 @@ func checkKeyMiddleware(logger *zap.Logger) gin.HandlerFunc {
 		}
 		keyContent = strings.TrimPrefix(keyContent, "Bearer ")
 
-		mutex.RLock()
-		keyInfo, ok := validKeys[keyContent]
-		mutex.RUnlock()
+		keyInfo, ok, err := getValidKeyForRequest(keyContent, time.Now())
+		if err != nil {
+			logger.Error("Failed to validate key from database", zap.String("key", keyContent), zap.Error(err))
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "authorization check unavailable"})
+			c.Abort()
+			return
+		}
 		if !ok {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization key"})
 			c.Abort()
@@ -282,6 +297,89 @@ func checkKeyMiddleware(logger *zap.Logger) gin.HandlerFunc {
 		)
 		c.Next()
 	}
+}
+
+func getValidKeyForRequest(keyContent string, now time.Time) (auth.Key, bool, error) {
+	cached, ok := getCachedKey(keyContent)
+	if ok {
+		if !isKeyLocallyValid(cached.Key, now) {
+			deleteCachedKey(keyContent)
+			proxy.RemoveRequestRing(keyContent)
+			return auth.Key{}, false, nil
+		}
+		if now.Sub(cached.LastSyncAt) <= keyCacheSyncTTL {
+			touchCachedKey(keyContent, now)
+			return cached.Key, true, nil
+		}
+	}
+
+	loaded, err := auth.GetValidKeyByContent(keyContent)
+	if err != nil {
+		return auth.Key{}, false, err
+	}
+	if loaded == nil {
+		deleteCachedKey(keyContent)
+		proxy.RemoveRequestRing(keyContent)
+		return auth.Key{}, false, nil
+	}
+
+	upsertCachedKey(*loaded, now, now)
+	return *loaded, true, nil
+}
+
+func getCachedKey(keyContent string) (cachedKey, bool) {
+	mutex.RLock()
+	defer mutex.RUnlock()
+	key, ok := validKeys[keyContent]
+	return key, ok
+}
+
+func touchCachedKey(keyContent string, accessAt time.Time) {
+	mutex.Lock()
+	defer mutex.Unlock()
+	if key, ok := validKeys[keyContent]; ok {
+		key.LastAccessAt = accessAt
+		validKeys[keyContent] = key
+	}
+}
+
+func upsertCachedKey(key auth.Key, syncAt time.Time, accessAt time.Time) {
+	if accessAt.IsZero() {
+		accessAt = syncAt
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	validKeys[key.KeyContent] = cachedKey{
+		Key:          key,
+		LastSyncAt:   syncAt,
+		LastAccessAt: accessAt,
+	}
+}
+
+func deleteCachedKey(keyContent string) {
+	mutex.Lock()
+	defer mutex.Unlock()
+	delete(validKeys, keyContent)
+}
+
+func snapshotCachedKeys() map[string]cachedKey {
+	mutex.RLock()
+	defer mutex.RUnlock()
+	out := make(map[string]cachedKey, len(validKeys))
+	for key, value := range validKeys {
+		out[key] = value
+	}
+	return out
+}
+
+func isKeyLocallyValid(key auth.Key, now time.Time) bool {
+	if key.Balance <= 0 {
+		return false
+	}
+	if !key.ExpireTime.IsZero() && !key.ExpireTime.After(now) {
+		return false
+	}
+	return true
 }
 
 func resolveModelGroup(c *gin.Context) (string, error) {
@@ -353,29 +451,45 @@ func startBackgroundTasks(logger *zap.Logger) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
-	logger.Info("Updating key info at startup")
-	updateKeyInfo()
+	logger.Info("Starting background tasks")
 
-	for {
-		select {
-		case <-ticker.C:
-			logger.Info("Performing background task")
-			go updateKeyInfo()
-			go FlushSpendLog(logger, proxy.SpendLogQueue)
-			go FlushKeySpend(logger, proxy.SnapshotKeySpendQueue())
-		}
+	for range ticker.C {
+		logger.Info("Performing background task")
+		refreshCachedKeys(logger)
+		go FlushSpendLog(logger, proxy.SpendLogQueue)
+		go FlushKeySpend(logger, proxy.SnapshotKeySpendQueue())
 	}
 }
 
-func updateKeyInfo() {
-	keys := auth.GetAllValidKey()
-	mutex.Lock()
-	defer mutex.Unlock()
-	validKeys = make(map[string]auth.Key)
-	for _, key := range keys {
-		validKeys[key.KeyContent] = key
+func refreshCachedKeys(logger *zap.Logger) {
+	now := time.Now()
+	cache := snapshotCachedKeys()
+	for keyContent, keyInfo := range cache {
+		if !keyInfo.LastAccessAt.IsZero() && now.Sub(keyInfo.LastAccessAt) > keyCacheIdleTTL {
+			deleteCachedKey(keyContent)
+			proxy.RemoveRequestRing(keyContent)
+			logger.Info("Evicted idle key cache entry", zap.String("key", keyContent))
+			continue
+		}
+
+		if now.Sub(keyInfo.LastSyncAt) <= keyCacheSyncTTL {
+			continue
+		}
+
+		latest, err := auth.GetValidKeyByContent(keyContent)
+		if err != nil {
+			logger.Warn("Failed to refresh key cache entry", zap.String("key", keyContent), zap.Error(err))
+			continue
+		}
+		if latest == nil {
+			deleteCachedKey(keyContent)
+			proxy.RemoveRequestRing(keyContent)
+			logger.Info("Removed invalid key cache entry", zap.String("key", keyContent))
+			continue
+		}
+
+		upsertCachedKey(*latest, now, keyInfo.LastAccessAt)
 	}
-	log.Printf("Updated valid keys: %d", len(validKeys))
 }
 
 func FlushSpendLog(logger *zap.Logger, ch <-chan spend.SpendRecord) {

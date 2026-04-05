@@ -2,12 +2,14 @@ package auth
 
 import (
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
 	janusDb "github.com/Uuq114/JanusLLM/internal/db"
+	"gorm.io/gorm"
 )
 
 type Key struct {
@@ -92,24 +94,35 @@ func CreateKeyRecord(keyContent string, keyName string, modelList []string, user
 }
 
 func CheckKeyRecord(keyContent string) bool {
+	key, err := GetValidKeyByContent(keyContent)
+	if err != nil {
+		return false
+	}
+	return key != nil
+}
+
+func GetValidKeyByContent(keyContent string) (*Key, error) {
 	db, err := janusDb.ConnectDatabase()
 	if err != nil {
-		log.Printf("CheckKeyRecord: connect database failed: %v", err)
-		return false
+		log.Printf("GetValidKeyByContent: connect database failed: %v", err)
+		return nil, err
 	}
 	defer janusDb.CloseDatabaseConnection(db)
 
 	var key Key
-	result := db.Table("janus_auth_key").Where("key_content = ?", keyContent).First(&key)
+	result := db.Table("janus_auth_key").
+		Where("key_content = ?", keyContent).
+		Where("balance > 0").
+		Where("expire_time > ? OR expire_time IS NULL", time.Now()).
+		First(&key)
 	if result.Error != nil {
-		log.Printf("CheckKeyRecord: query failed: %v", result.Error)
-		return false
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		log.Printf("GetValidKeyByContent: query failed: %v", result.Error)
+		return nil, result.Error
 	}
-	if key.ExpireTime.Before(time.Now()) {
-		log.Printf("CheckKeyRecord: key expired")
-		return false
-	}
-	return true
+	return &key, nil
 }
 
 func GetAllValidKey() []Key {

@@ -137,6 +137,12 @@ func GetOrCreateRequestRing(key string, rpm int) *RequestRing {
 	return created
 }
 
+func RemoveRequestRing(key string) {
+	keyRequestRingMu.Lock()
+	defer keyRequestRingMu.Unlock()
+	delete(keyRequestRing, key)
+}
+
 func GetOrCreateKeySpendQueue(key string) chan float64 {
 	keySpendQueueMu.RLock()
 	ch, ok := keySpendQueue[key]
