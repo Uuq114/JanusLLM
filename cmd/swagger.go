@@ -31,6 +31,12 @@ func handleOpenAPISpec(c *gin.Context) {
 		"servers": []gin.H{
 			{"url": "/"},
 		},
+		"tags": []gin.H{
+			{"name": "LLM API", "description": "OpenAI/Anthropic compatible gateway endpoints."},
+			{"name": "Admin Organizations", "description": "Management API for organizations."},
+			{"name": "Admin Teams", "description": "Management API for teams."},
+			{"name": "Admin Keys", "description": "Management API for API keys."},
+		},
 		"components": gin.H{
 			"securitySchemes": gin.H{
 				"bearerAuth": gin.H{
@@ -179,6 +185,7 @@ func handleOpenAPISpec(c *gin.Context) {
 			"/ping": gin.H{
 				"get": gin.H{
 					"summary": "Health check",
+					"tags":    []string{"LLM API"},
 					"responses": gin.H{
 						"200": jsonResponse("Service is alive", gin.H{
 							"type":       "object",
@@ -190,6 +197,7 @@ func handleOpenAPISpec(c *gin.Context) {
 			"/v1/models": gin.H{
 				"get": gin.H{
 					"summary":  "List models accessible by the current API key",
+					"tags":     []string{"LLM API"},
 					"security": []gin.H{{"bearerAuth": []string{}}},
 					"responses": gin.H{
 						"200": jsonResponse("Accessible model list", gin.H{"$ref": "#/components/schemas/ModelsResponse"}),
@@ -201,12 +209,12 @@ func handleOpenAPISpec(c *gin.Context) {
 			"/v1/completions":                           nativeProxyPath("Text completions", "#/components/schemas/NativeModelRequest"),
 			"/v1/embeddings":                            nativeProxyPath("Embeddings", "#/components/schemas/NativeModelRequest"),
 			"/v1/messages":                              nativeProxyPath("Anthropic messages", "#/components/schemas/NativeModelRequest"),
-			"/v1/admin/organizations":                   adminCollectionPath("Organizations", "#/components/schemas/Organization", "#/components/schemas/OrganizationRequest"),
-			"/v1/admin/organizations/{organization_id}": adminItemPath("Organization", "organization_id", "#/components/schemas/Organization", "#/components/schemas/OrganizationRequest"),
-			"/v1/admin/teams":                           adminCollectionPath("Teams", "#/components/schemas/Team", "#/components/schemas/TeamRequest"),
-			"/v1/admin/teams/{team_id}":                 adminItemPath("Team", "team_id", "#/components/schemas/Team", "#/components/schemas/TeamRequest"),
-			"/v1/admin/keys":                            adminCollectionPath("Keys", "#/components/schemas/Key", "#/components/schemas/KeyRequest"),
-			"/v1/admin/keys/{key_id}":                   adminItemPath("Key", "key_id", "#/components/schemas/Key", "#/components/schemas/KeyRequest"),
+			"/v1/admin/organizations":                   adminCollectionPath("Admin Organizations", "Organizations", "#/components/schemas/Organization", "#/components/schemas/OrganizationRequest"),
+			"/v1/admin/organizations/{organization_id}": adminItemPath("Admin Organizations", "Organization", "organization_id", "#/components/schemas/Organization", "#/components/schemas/OrganizationRequest"),
+			"/v1/admin/teams":                           adminCollectionPath("Admin Teams", "Teams", "#/components/schemas/Team", "#/components/schemas/TeamRequest"),
+			"/v1/admin/teams/{team_id}":                 adminItemPath("Admin Teams", "Team", "team_id", "#/components/schemas/Team", "#/components/schemas/TeamRequest"),
+			"/v1/admin/keys":                            adminCollectionPath("Admin Keys", "Keys", "#/components/schemas/Key", "#/components/schemas/KeyRequest"),
+			"/v1/admin/keys/{key_id}":                   adminItemPath("Admin Keys", "Key", "key_id", "#/components/schemas/Key", "#/components/schemas/KeyRequest"),
 		},
 	})
 }
@@ -215,6 +223,7 @@ func nativeProxyPath(summary string, schemaRef string) gin.H {
 	return gin.H{
 		"post": gin.H{
 			"summary":  summary,
+			"tags":     []string{"LLM API"},
 			"security": []gin.H{{"bearerAuth": []string{}}},
 			"requestBody": gin.H{
 				"required": true,
@@ -253,10 +262,11 @@ func errorResponse(description string) gin.H {
 	return jsonResponse(description, gin.H{"$ref": "#/components/schemas/ErrorResponse"})
 }
 
-func adminCollectionPath(name string, responseSchemaRef string, requestSchemaRef string) gin.H {
+func adminCollectionPath(tag string, name string, responseSchemaRef string, requestSchemaRef string) gin.H {
 	return gin.H{
 		"get": gin.H{
 			"summary":  "List " + strings.ToLower(name),
+			"tags":     []string{tag},
 			"security": []gin.H{{"basicAuth": []string{}}},
 			"responses": gin.H{
 				"200": jsonResponse(name+" list", gin.H{
@@ -273,6 +283,7 @@ func adminCollectionPath(name string, responseSchemaRef string, requestSchemaRef
 		},
 		"post": gin.H{
 			"summary":  "Create " + strings.ToLower(strings.TrimSuffix(name, "s")),
+			"tags":     []string{tag},
 			"security": []gin.H{{"basicAuth": []string{}}},
 			"requestBody": gin.H{
 				"required": true,
@@ -292,7 +303,7 @@ func adminCollectionPath(name string, responseSchemaRef string, requestSchemaRef
 	}
 }
 
-func adminItemPath(name string, paramName string, responseSchemaRef string, requestSchemaRef string) gin.H {
+func adminItemPath(tag string, name string, paramName string, responseSchemaRef string, requestSchemaRef string) gin.H {
 	param := gin.H{
 		"name":     paramName,
 		"in":       "path",
@@ -302,6 +313,7 @@ func adminItemPath(name string, paramName string, responseSchemaRef string, requ
 	return gin.H{
 		"get": gin.H{
 			"summary":    "Get " + strings.ToLower(name),
+			"tags":       []string{tag},
 			"security":   []gin.H{{"basicAuth": []string{}}},
 			"parameters": []gin.H{param},
 			"responses": gin.H{
@@ -312,6 +324,7 @@ func adminItemPath(name string, paramName string, responseSchemaRef string, requ
 		},
 		"patch": gin.H{
 			"summary":    "Update " + strings.ToLower(name),
+			"tags":       []string{tag},
 			"security":   []gin.H{{"basicAuth": []string{}}},
 			"parameters": []gin.H{param},
 			"requestBody": gin.H{
@@ -332,6 +345,7 @@ func adminItemPath(name string, paramName string, responseSchemaRef string, requ
 		},
 		"delete": gin.H{
 			"summary":    "Delete " + strings.ToLower(name),
+			"tags":       []string{tag},
 			"security":   []gin.H{{"basicAuth": []string{}}},
 			"parameters": []gin.H{param},
 			"responses": gin.H{
