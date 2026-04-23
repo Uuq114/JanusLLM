@@ -51,6 +51,10 @@ func main() {
 	logger := buildLogger(config.Service.LogLevel)
 	defer logger.Sync()
 
+	if err := syncMasterAdminUser(config.Admin, logger); err != nil {
+		log.Fatalf("Failed to sync master admin user: %v", err)
+	}
+
 	p := proxy.NewProxy()
 	for _, group := range config.Models.ModelGroups {
 		p.RegisterModelGroup(&group)
@@ -65,7 +69,7 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
 	registerSwaggerRoutes(r)
-	registerAdminRoutes(r, config.Admin, logger)
+	registerAdminRoutes(r, logger)
 
 	api := r.Group("/v1")
 	api.Use(logReqHeadersMiddleware(logger))

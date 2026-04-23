@@ -28,6 +28,15 @@ CREATE TABLE IF NOT EXISTS janus_auth_user (
   update_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS janus_admin_user (
+  admin_user_id BIGSERIAL PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  create_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  update_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS janus_auth_key (
   key_id BIGSERIAL PRIMARY KEY,
   key_content TEXT NOT NULL UNIQUE,
@@ -48,6 +57,7 @@ CREATE TABLE IF NOT EXISTS janus_auth_key (
 CREATE INDEX IF NOT EXISTS idx_auth_key_org_id ON janus_auth_key (organization_id);
 CREATE INDEX IF NOT EXISTS idx_auth_key_expire_time ON janus_auth_key (expire_time);
 CREATE INDEX IF NOT EXISTS idx_auth_key_balance ON janus_auth_key (balance);
+CREATE INDEX IF NOT EXISTS idx_admin_user_username_enabled ON janus_admin_user (username, enabled);
 
 -- ------------------------
 -- Model config tables
@@ -133,6 +143,12 @@ EXECUTE FUNCTION janus_set_update_time();
 DROP TRIGGER IF EXISTS trg_user_update_time ON janus_auth_user;
 CREATE TRIGGER trg_user_update_time
 BEFORE UPDATE ON janus_auth_user
+FOR EACH ROW
+EXECUTE FUNCTION janus_set_update_time();
+
+DROP TRIGGER IF EXISTS trg_admin_user_update_time ON janus_admin_user;
+CREATE TRIGGER trg_admin_user_update_time
+BEFORE UPDATE ON janus_admin_user
 FOR EACH ROW
 EXECUTE FUNCTION janus_set_update_time();
 

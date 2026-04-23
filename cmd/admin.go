@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
 	"github.com/Uuq114/JanusLLM/internal/auth"
@@ -21,9 +21,59 @@ import (
 
 const adminMasterUser = "admin"
 
-func registerAdminRoutes(r *gin.Engine, config AdminConfig, logger *zap.Logger) {
+func syncMasterAdminUser(config AdminConfig, logger *zap.Logger) error {
+	masterKey := strings.TrimSpace(config.MasterKey)
+	if masterKey == "" {
+		return errors.New("admin.master_key is empty")
+	}
+
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(masterKey), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+
+	db, err := janusDb.ConnectDatabase()
+	if err != nil {
+		return err
+	}
+	defer janusDb.CloseDatabaseConnection(db)
+
+	user := adminUserDTO{
+		Username:     adminMasterUser,
+		PasswordHash: string(passwordHash),
+		Enabled:      true,
+	}
+
+	var existing adminUserDTO
+	err = db.Table("janus_admin_user").Where("username = ?", adminMasterUser).First(&existing).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		if err := db.Table("janus_admin_user").
+			Omit("admin_user_id", "create_time", "update_time").
+			Create(&user).Error; err != nil {
+			return err
+		}
+		logger.Info("Created master admin user", zap.String("username", adminMasterUser))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	if err := db.Table("janus_admin_user").
+		Where("admin_user_id = ?", existing.AdminUserID).
+		Updates(map[string]interface{}{
+			"password_hash": user.PasswordHash,
+			"enabled":       true,
+		}).Error; err != nil {
+		return err
+	}
+	logger.Info("Synced master admin user", zap.String("username", adminMasterUser))
+	return nil
+}
+
+func registerAdminRoutes(r *gin.Engine, logger *zap.Logger) {
 	admin := r.Group("/v1/admin")
-	admin.Use(adminAuthMiddleware(config, logger))
+	admin.Use(adminAuthMiddleware(logger))
 	{
 		admin.GET("/organizations", listOrganizations)
 		admin.POST("/organizations", createOrganization)
@@ -45,10 +95,25 @@ func registerAdminRoutes(r *gin.Engine, config AdminConfig, logger *zap.Logger) 
 	}
 }
 
-func adminAuthMiddleware(config AdminConfig, logger *zap.Logger) gin.HandlerFunc {
+func adminAuthMiddleware(logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		username, password, ok := c.Request.BasicAuth()
-		if !ok || !isMasterAdminCredential(config.MasterKey, username, password) {
+		if !ok {
+			logger.Warn("admin auth failed", zap.String("username", username))
+			c.Header("WWW-Authenticate", `Basic realm="JanusLLM Admin"`)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid admin credentials"})
+			c.Abort()
+			return
+		}
+
+		valid, err := validateAdminCredential(username, password)
+		if err != nil {
+			logger.Error("admin auth database check failed", zap.String("username", username), zap.Error(err))
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "admin auth unavailable"})
+			c.Abort()
+			return
+		}
+		if !valid {
 			logger.Warn("admin auth failed", zap.String("username", username))
 			c.Header("WWW-Authenticate", `Basic realm="JanusLLM Admin"`)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid admin credentials"})
@@ -61,13 +126,42 @@ func adminAuthMiddleware(config AdminConfig, logger *zap.Logger) gin.HandlerFunc
 	}
 }
 
-func isMasterAdminCredential(masterKey string, username string, password string) bool {
-	if masterKey == "" {
-		return false
+func validateAdminCredential(username string, password string) (bool, error) {
+	username = strings.TrimSpace(username)
+	if username == "" || password == "" {
+		return false, nil
 	}
-	userMatch := subtle.ConstantTimeCompare([]byte(username), []byte(adminMasterUser)) == 1
-	passMatch := subtle.ConstantTimeCompare([]byte(password), []byte(masterKey)) == 1
-	return userMatch && passMatch
+
+	db, err := janusDb.ConnectDatabase()
+	if err != nil {
+		return false, err
+	}
+	defer janusDb.CloseDatabaseConnection(db)
+
+	var user adminUserDTO
+	err = db.Table("janus_admin_user").
+		Where("username = ? AND enabled = TRUE", username).
+		First(&user).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
+type adminUserDTO struct {
+	AdminUserID  int64     `gorm:"column:admin_user_id" json:"admin_user_id"`
+	Username     string    `gorm:"column:username" json:"username"`
+	PasswordHash string    `gorm:"column:password_hash" json:"-"`
+	Enabled      bool      `gorm:"column:enabled" json:"enabled"`
+	CreateTime   time.Time `gorm:"column:create_time" json:"create_time"`
+	UpdateTime   time.Time `gorm:"column:update_time" json:"update_time"`
 }
 
 type organizationDTO struct {
