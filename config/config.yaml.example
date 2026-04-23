@@ -39,5 +39,10 @@ models:
 
 secrets:
   # Local/dev can put plain DSN here for testing.
-  database_url: "<DB_USER>:<DB_PASSWORD>@tcp(<DB_HOST>:<DB_PORT>)/<DB_NAME>?charset=utf8mb4&parseTime=True&loc=Local"
+  database_url: "postgres://<DB_USER>:<DB_PASSWORD>@<DB_HOST>:<DB_PORT>/<DB_NAME>?sslmode=disable"
   # Production should inject JANUS_DATABASE_URL via k8s Secret or config center.
+
+admin:
+  # Username is fixed to "admin" for the config-backed master account.
+  master_key: "<ADMIN_MASTER_KEY_FROM_SECRET>"
+  # Production should inject JANUS_ADMIN_MASTER_KEY via k8s Secret or config center.

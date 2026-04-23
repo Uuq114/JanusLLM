@@ -65,6 +65,7 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
 	registerSwaggerRoutes(r)
+	registerAdminRoutes(r, config.Admin, logger)
 
 	api := r.Group("/v1")
 	api.Use(logReqHeadersMiddleware(logger))
@@ -96,10 +97,15 @@ type SecretsConfig struct {
 	DatabaseURL string `yaml:"database_url"`
 }
 
+type AdminConfig struct {
+	MasterKey string `yaml:"master_key"`
+}
+
 type JanusConfig struct {
 	Service ServiceConfig `yaml:"service"`
 	Models  ModelsConfig  `yaml:"models"`
 	Secrets SecretsConfig `yaml:"secrets"`
+	Admin   AdminConfig   `yaml:"admin"`
 
 	LegacyModelGroups []models.ModelGroup `yaml:"model_groups"`
 	LegacyDatabaseURL string              `yaml:"database_url"`
@@ -144,6 +150,12 @@ func loadJanusConfig(path string) (*JanusConfig, error) {
 	}
 	if strings.TrimSpace(config.Secrets.DatabaseURL) == "" {
 		return nil, errors.New("database_url is empty; set secrets.database_url or JANUS_DATABASE_URL")
+	}
+	if masterKey := strings.TrimSpace(os.Getenv("JANUS_ADMIN_MASTER_KEY")); masterKey != "" {
+		config.Admin.MasterKey = masterKey
+	}
+	if strings.TrimSpace(config.Admin.MasterKey) == "" {
+		return nil, errors.New("admin.master_key is empty; set admin.master_key or JANUS_ADMIN_MASTER_KEY")
 	}
 
 	janusDb.DatabaseDsn = config.Secrets.DatabaseURL

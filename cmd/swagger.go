@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -36,6 +37,10 @@ func handleOpenAPISpec(c *gin.Context) {
 					"type":         "http",
 					"scheme":       "bearer",
 					"bearerFormat": "API Key",
+				},
+				"basicAuth": gin.H{
+					"type":   "http",
+					"scheme": "basic",
 				},
 			},
 			"schemas": gin.H{
@@ -101,6 +106,73 @@ func handleOpenAPISpec(c *gin.Context) {
 						},
 					},
 				},
+				"Organization": gin.H{
+					"type": "object",
+					"properties": gin.H{
+						"organization_id":   gin.H{"type": "integer", "example": 1},
+						"organization_name": gin.H{"type": "string", "example": "default-org"},
+						"create_time":       gin.H{"type": "string", "format": "date-time"},
+						"update_time":       gin.H{"type": "string", "format": "date-time"},
+					},
+				},
+				"OrganizationRequest": gin.H{
+					"type":     "object",
+					"required": []string{"organization_name"},
+					"properties": gin.H{
+						"organization_name": gin.H{"type": "string", "example": "default-org"},
+					},
+				},
+				"Team": gin.H{
+					"type": "object",
+					"properties": gin.H{
+						"team_id":         gin.H{"type": "integer", "example": 1},
+						"team_name":       gin.H{"type": "string", "example": "platform-team"},
+						"organization_id": gin.H{"type": "integer", "example": 1},
+						"create_time":     gin.H{"type": "string", "format": "date-time"},
+						"update_time":     gin.H{"type": "string", "format": "date-time"},
+					},
+				},
+				"TeamRequest": gin.H{
+					"type":     "object",
+					"required": []string{"team_name", "organization_id"},
+					"properties": gin.H{
+						"team_name":       gin.H{"type": "string", "example": "platform-team"},
+						"organization_id": gin.H{"type": "integer", "example": 1},
+					},
+				},
+				"Key": gin.H{
+					"type": "object",
+					"properties": gin.H{
+						"key_id":               gin.H{"type": "integer", "example": 1},
+						"key_content":          gin.H{"type": "string", "example": "sk-..."},
+						"key_name":             gin.H{"type": "string", "example": "demo-key"},
+						"model_list":           gin.H{"type": "array", "items": gin.H{"type": "string"}, "example": []string{"qwen3.5-27B"}},
+						"team_id":              gin.H{"type": "integer", "example": 1},
+						"organization_id":      gin.H{"type": "integer", "example": 1},
+						"balance":              gin.H{"type": "number", "example": 100},
+						"total_spend":          gin.H{"type": "number", "example": 0},
+						"request_per_minute":   gin.H{"type": "integer", "example": 60},
+						"spend_limit_per_week": gin.H{"type": "number", "example": 0},
+						"expire_time":          gin.H{"type": "string", "format": "date-time", "nullable": true},
+						"create_time":          gin.H{"type": "string", "format": "date-time"},
+						"update_time":          gin.H{"type": "string", "format": "date-time"},
+					},
+				},
+				"KeyRequest": gin.H{
+					"type":     "object",
+					"required": []string{"key_name", "team_id", "organization_id"},
+					"properties": gin.H{
+						"key_content":          gin.H{"type": "string", "description": "Optional. Server generates one when omitted."},
+						"key_name":             gin.H{"type": "string", "example": "demo-key"},
+						"model_list":           gin.H{"type": "array", "items": gin.H{"type": "string"}, "example": []string{"qwen3.5-27B"}},
+						"team_id":              gin.H{"type": "integer", "example": 1},
+						"organization_id":      gin.H{"type": "integer", "example": 1},
+						"balance":              gin.H{"type": "number", "example": 100},
+						"request_per_minute":   gin.H{"type": "integer", "example": 60},
+						"spend_limit_per_week": gin.H{"type": "number", "example": 0},
+						"expire_time":          gin.H{"type": "string", "format": "date-time"},
+					},
+				},
 			},
 		},
 		"paths": gin.H{
@@ -125,10 +197,16 @@ func handleOpenAPISpec(c *gin.Context) {
 					},
 				},
 			},
-			"/v1/chat/completions": nativeProxyPath("Chat completions", "#/components/schemas/ChatCompletionRequest"),
-			"/v1/completions":      nativeProxyPath("Text completions", "#/components/schemas/NativeModelRequest"),
-			"/v1/embeddings":       nativeProxyPath("Embeddings", "#/components/schemas/NativeModelRequest"),
-			"/v1/messages":         nativeProxyPath("Anthropic messages", "#/components/schemas/NativeModelRequest"),
+			"/v1/chat/completions":                      nativeProxyPath("Chat completions", "#/components/schemas/ChatCompletionRequest"),
+			"/v1/completions":                           nativeProxyPath("Text completions", "#/components/schemas/NativeModelRequest"),
+			"/v1/embeddings":                            nativeProxyPath("Embeddings", "#/components/schemas/NativeModelRequest"),
+			"/v1/messages":                              nativeProxyPath("Anthropic messages", "#/components/schemas/NativeModelRequest"),
+			"/v1/admin/organizations":                   adminCollectionPath("Organizations", "#/components/schemas/Organization", "#/components/schemas/OrganizationRequest"),
+			"/v1/admin/organizations/{organization_id}": adminItemPath("Organization", "organization_id", "#/components/schemas/Organization", "#/components/schemas/OrganizationRequest"),
+			"/v1/admin/teams":                           adminCollectionPath("Teams", "#/components/schemas/Team", "#/components/schemas/TeamRequest"),
+			"/v1/admin/teams/{team_id}":                 adminItemPath("Team", "team_id", "#/components/schemas/Team", "#/components/schemas/TeamRequest"),
+			"/v1/admin/keys":                            adminCollectionPath("Keys", "#/components/schemas/Key", "#/components/schemas/KeyRequest"),
+			"/v1/admin/keys/{key_id}":                   adminItemPath("Key", "key_id", "#/components/schemas/Key", "#/components/schemas/KeyRequest"),
 		},
 	})
 }
@@ -173,6 +251,97 @@ func jsonResponse(description string, schema gin.H) gin.H {
 
 func errorResponse(description string) gin.H {
 	return jsonResponse(description, gin.H{"$ref": "#/components/schemas/ErrorResponse"})
+}
+
+func adminCollectionPath(name string, responseSchemaRef string, requestSchemaRef string) gin.H {
+	return gin.H{
+		"get": gin.H{
+			"summary":  "List " + strings.ToLower(name),
+			"security": []gin.H{{"basicAuth": []string{}}},
+			"responses": gin.H{
+				"200": jsonResponse(name+" list", gin.H{
+					"type": "object",
+					"properties": gin.H{
+						"data": gin.H{
+							"type":  "array",
+							"items": gin.H{"$ref": responseSchemaRef},
+						},
+					},
+				}),
+				"401": errorResponse("Unauthorized"),
+			},
+		},
+		"post": gin.H{
+			"summary":  "Create " + strings.ToLower(strings.TrimSuffix(name, "s")),
+			"security": []gin.H{{"basicAuth": []string{}}},
+			"requestBody": gin.H{
+				"required": true,
+				"content": gin.H{
+					"application/json": gin.H{
+						"schema": gin.H{"$ref": requestSchemaRef},
+					},
+				},
+			},
+			"responses": gin.H{
+				"201": jsonResponse("Created", gin.H{"$ref": responseSchemaRef}),
+				"400": errorResponse("Bad request"),
+				"401": errorResponse("Unauthorized"),
+				"409": errorResponse("Conflict"),
+			},
+		},
+	}
+}
+
+func adminItemPath(name string, paramName string, responseSchemaRef string, requestSchemaRef string) gin.H {
+	param := gin.H{
+		"name":     paramName,
+		"in":       "path",
+		"required": true,
+		"schema":   gin.H{"type": "integer"},
+	}
+	return gin.H{
+		"get": gin.H{
+			"summary":    "Get " + strings.ToLower(name),
+			"security":   []gin.H{{"basicAuth": []string{}}},
+			"parameters": []gin.H{param},
+			"responses": gin.H{
+				"200": jsonResponse(name, gin.H{"$ref": responseSchemaRef}),
+				"401": errorResponse("Unauthorized"),
+				"404": errorResponse("Not found"),
+			},
+		},
+		"patch": gin.H{
+			"summary":    "Update " + strings.ToLower(name),
+			"security":   []gin.H{{"basicAuth": []string{}}},
+			"parameters": []gin.H{param},
+			"requestBody": gin.H{
+				"required": true,
+				"content": gin.H{
+					"application/json": gin.H{
+						"schema": gin.H{"$ref": requestSchemaRef},
+					},
+				},
+			},
+			"responses": gin.H{
+				"200": jsonResponse(name, gin.H{"$ref": responseSchemaRef}),
+				"400": errorResponse("Bad request"),
+				"401": errorResponse("Unauthorized"),
+				"404": errorResponse("Not found"),
+				"409": errorResponse("Conflict"),
+			},
+		},
+		"delete": gin.H{
+			"summary":    "Delete " + strings.ToLower(name),
+			"security":   []gin.H{{"basicAuth": []string{}}},
+			"parameters": []gin.H{param},
+			"responses": gin.H{
+				"204": gin.H{"description": "Deleted"},
+				"401": errorResponse("Unauthorized"),
+				"404": errorResponse("Not found"),
+				"409": errorResponse("Conflict"),
+			},
+		},
+	}
 }
 
 const swaggerHTML = `<!doctype html>
