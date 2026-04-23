@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Uuq114/JanusLLM/internal/auth"
 	janusDb "github.com/Uuq114/JanusLLM/internal/db"
@@ -81,11 +82,18 @@ func registerAdminRoutes(r *gin.Engine, logger *zap.Logger) {
 		admin.PATCH("/organizations/:organization_id", updateOrganization)
 		admin.DELETE("/organizations/:organization_id", deleteOrganization)
 
-		admin.GET("/teams", listTeams)
-		admin.POST("/teams", createTeam)
-		admin.GET("/teams/:team_id", getTeam)
-		admin.PATCH("/teams/:team_id", updateTeam)
-		admin.DELETE("/teams/:team_id", deleteTeam)
+		admin.GET("/users", listUsers)
+		admin.POST("/users", createUser)
+		admin.GET("/users/:user_id", getUser)
+		admin.PATCH("/users/:user_id", updateUser)
+		admin.DELETE("/users/:user_id", deleteUser)
+
+		// Backward-compatible aliases. The persisted resource is janus_auth_user.
+		admin.GET("/teams", listUsers)
+		admin.POST("/teams", createUser)
+		admin.GET("/teams/:team_id", getUser)
+		admin.PATCH("/teams/:team_id", updateUser)
+		admin.DELETE("/teams/:team_id", deleteUser)
 
 		admin.GET("/keys", listKeys)
 		admin.POST("/keys", createKey)
@@ -165,10 +173,10 @@ type adminUserDTO struct {
 }
 
 type organizationDTO struct {
-	OrganizationID   int64     `gorm:"column:organization_id" json:"organization_id"`
+	OrganizationID   int64     `gorm:"primaryKey;autoIncrement;column:organization_id" json:"organization_id"`
 	OrganizationName string    `gorm:"column:organization_name" json:"organization_name"`
-	CreateTime       time.Time `gorm:"column:create_time" json:"create_time"`
-	UpdateTime       time.Time `gorm:"column:update_time" json:"update_time"`
+	CreateTime       time.Time `gorm:"column:create_time" json:"-"`
+	UpdateTime       time.Time `gorm:"column:update_time" json:"-"`
 }
 
 type organizationRequest struct {
@@ -212,6 +220,7 @@ func createOrganization(c *gin.Context) {
 		return
 	}
 	if err := db.Table("janus_auth_organization").
+		Clauses(clause.Returning{}).
 		Omit("organization_id", "create_time", "update_time").
 		Create(&organization).Error; err != nil {
 		respondDBError(c, "create organization failed", err)
@@ -305,50 +314,66 @@ func deleteOrganization(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-type teamDTO struct {
-	TeamID         int64     `gorm:"column:user_id" json:"team_id"`
-	TeamName       string    `gorm:"column:user_name" json:"team_name"`
+type userDTO struct {
+	UserID         int64     `gorm:"primaryKey;autoIncrement;column:user_id" json:"user_id"`
+	UserName       string    `gorm:"column:user_name" json:"user_name"`
 	OrganizationID int64     `gorm:"column:organization_id" json:"organization_id"`
-	CreateTime     time.Time `gorm:"column:create_time" json:"create_time"`
-	UpdateTime     time.Time `gorm:"column:update_time" json:"update_time"`
+	CreateTime     time.Time `gorm:"column:create_time" json:"-"`
+	UpdateTime     time.Time `gorm:"column:update_time" json:"-"`
 }
 
-type teamRequest struct {
-	TeamName       string `json:"team_name" binding:"required"`
+type userRequest struct {
+	UserName       string `json:"user_name"`
+	TeamName       string `json:"team_name"`
 	OrganizationID int64  `json:"organization_id" binding:"required"`
 }
 
-type teamPatchRequest struct {
+func (r userRequest) resolvedName() string {
+	if strings.TrimSpace(r.UserName) != "" {
+		return r.UserName
+	}
+	return r.TeamName
+}
+
+type userPatchRequest struct {
+	UserName       *string `json:"user_name"`
 	TeamName       *string `json:"team_name"`
 	OrganizationID *int64  `json:"organization_id"`
 }
 
-func listTeams(c *gin.Context) {
+func (r userPatchRequest) resolvedName() *string {
+	if r.UserName != nil {
+		return r.UserName
+	}
+	return r.TeamName
+}
+
+func listUsers(c *gin.Context) {
 	db, ok := connectAdminDB(c)
 	if !ok {
 		return
 	}
 	defer janusDb.CloseDatabaseConnection(db)
 
-	var teams []teamDTO
-	if err := db.Table("janus_auth_user").Order("user_id").Find(&teams).Error; err != nil {
-		respondDBError(c, "list teams failed", err)
+	var users []userDTO
+	if err := db.Table("janus_auth_user").Order("user_id").Find(&users).Error; err != nil {
+		respondDBError(c, "list users failed", err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": teams})
+	c.JSON(http.StatusOK, gin.H{"data": users})
 }
 
-func createTeam(c *gin.Context) {
-	var req teamRequest
+func createUser(c *gin.Context) {
+	var req userRequest
 	if !bindAdminJSON(c, &req) {
 		return
 	}
-	team := teamDTO{
-		TeamName:       strings.TrimSpace(req.TeamName),
+	user := userDTO{
+		UserName:       strings.TrimSpace(req.resolvedName()),
 		OrganizationID: req.OrganizationID,
 	}
-	if team.TeamName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "team_name is required"})
+	if user.UserName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_name is required"})
 		return
 	}
 
@@ -359,16 +384,17 @@ func createTeam(c *gin.Context) {
 	defer janusDb.CloseDatabaseConnection(db)
 
 	if err := db.Table("janus_auth_user").
+		Clauses(clause.Returning{}).
 		Omit("user_id", "create_time", "update_time").
-		Create(&team).Error; err != nil {
-		respondDBError(c, "create team failed", err)
+		Create(&user).Error; err != nil {
+		respondDBError(c, "create user failed", err)
 		return
 	}
-	c.JSON(http.StatusCreated, team)
+	c.JSON(http.StatusCreated, user)
 }
 
-func getTeam(c *gin.Context) {
-	id, ok := parseIDParam(c, "team_id")
+func getUser(c *gin.Context) {
+	id, ok := parseUserIDParam(c)
 	if !ok {
 		return
 	}
@@ -379,28 +405,28 @@ func getTeam(c *gin.Context) {
 	}
 	defer janusDb.CloseDatabaseConnection(db)
 
-	var team teamDTO
-	if !firstByID(c, db.Table("janus_auth_user").Where("user_id = ?", id), &team) {
+	var user userDTO
+	if !firstByID(c, db.Table("janus_auth_user").Where("user_id = ?", id), &user) {
 		return
 	}
-	c.JSON(http.StatusOK, team)
+	c.JSON(http.StatusOK, user)
 }
 
-func updateTeam(c *gin.Context) {
-	id, ok := parseIDParam(c, "team_id")
+func updateUser(c *gin.Context) {
+	id, ok := parseUserIDParam(c)
 	if !ok {
 		return
 	}
-	var req teamPatchRequest
+	var req userPatchRequest
 	if !bindAdminJSON(c, &req) {
 		return
 	}
 
 	updates := map[string]interface{}{}
-	if req.TeamName != nil {
-		name := strings.TrimSpace(*req.TeamName)
+	if nameValue := req.resolvedName(); nameValue != nil {
+		name := strings.TrimSpace(*nameValue)
 		if name == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "team_name cannot be empty"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "user_name cannot be empty"})
 			return
 		}
 		updates["user_name"] = name
@@ -421,18 +447,18 @@ func updateTeam(c *gin.Context) {
 
 	result := db.Table("janus_auth_user").Where("user_id = ?", id).Updates(updates)
 	if result.Error != nil {
-		respondDBError(c, "update team failed", result.Error)
+		respondDBError(c, "update user failed", result.Error)
 		return
 	}
 	if result.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "team not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 		return
 	}
-	getTeam(c)
+	getUser(c)
 }
 
-func deleteTeam(c *gin.Context) {
-	id, ok := parseIDParam(c, "team_id")
+func deleteUser(c *gin.Context) {
+	id, ok := parseUserIDParam(c)
 	if !ok {
 		return
 	}
@@ -443,39 +469,41 @@ func deleteTeam(c *gin.Context) {
 	}
 	defer janusDb.CloseDatabaseConnection(db)
 
-	result := db.Table("janus_auth_user").Where("user_id = ?", id).Delete(&teamDTO{})
+	result := db.Table("janus_auth_user").Where("user_id = ?", id).Delete(&userDTO{})
 	if result.Error != nil {
-		respondDBError(c, "delete team failed", result.Error)
+		respondDBError(c, "delete user failed", result.Error)
 		return
 	}
 	if result.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "team not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 		return
 	}
 	c.Status(http.StatusNoContent)
 }
 
 type keyDTO struct {
-	KeyID             int64            `gorm:"column:key_id" json:"key_id"`
+	KeyID             int64            `gorm:"primaryKey;autoIncrement;column:key_id" json:"key_id"`
 	KeyContent        string           `gorm:"column:key_content" json:"key_content"`
 	KeyName           string           `gorm:"column:key_name" json:"key_name"`
 	ModelList         auth.StringSlice `gorm:"column:model_list" json:"model_list"`
-	TeamID            int64            `gorm:"column:user_id" json:"team_id"`
+	UserID            int64            `gorm:"column:user_id" json:"user_id"`
 	OrganizationID    int64            `gorm:"column:organization_id" json:"organization_id"`
 	Balance           float64          `gorm:"column:balance" json:"balance"`
 	TotalSpend        float64          `gorm:"column:total_spend" json:"total_spend"`
 	RequestPerMinute  int              `gorm:"column:request_per_minute" json:"request_per_minute"`
 	SpendLimitPerWeek float64          `gorm:"column:spend_limit_per_week" json:"spend_limit_per_week"`
-	CreateTime        time.Time        `gorm:"column:create_time" json:"create_time"`
-	UpdateTime        time.Time        `gorm:"column:update_time" json:"update_time"`
+	CreateTime        time.Time        `gorm:"column:create_time" json:"-"`
+	UpdateTime        time.Time        `gorm:"column:update_time" json:"-"`
 	ExpireTime        *time.Time       `gorm:"column:expire_time" json:"expire_time"`
 }
 
 type keyRequest struct {
 	KeyContent        string     `json:"key_content"`
 	KeyName           string     `json:"key_name" binding:"required"`
+	AllModels         bool       `json:"all_models"`
 	ModelList         []string   `json:"model_list"`
-	TeamID            int64      `json:"team_id" binding:"required"`
+	UserID            int64      `json:"user_id"`
+	TeamID            int64      `json:"team_id"`
 	OrganizationID    int64      `json:"organization_id" binding:"required"`
 	Balance           float64    `json:"balance"`
 	RequestPerMinute  int        `json:"request_per_minute"`
@@ -483,16 +511,57 @@ type keyRequest struct {
 	ExpireTime        *time.Time `json:"expire_time"`
 }
 
+func (r keyRequest) resolvedUserID() int64 {
+	if r.UserID > 0 {
+		return r.UserID
+	}
+	return r.TeamID
+}
+
 type keyPatchRequest struct {
 	KeyContent        *string    `json:"key_content"`
 	KeyName           *string    `json:"key_name"`
+	AllModels         *bool      `json:"all_models"`
 	ModelList         *[]string  `json:"model_list"`
+	UserID            *int64     `json:"user_id"`
 	TeamID            *int64     `json:"team_id"`
 	OrganizationID    *int64     `json:"organization_id"`
 	Balance           *float64   `json:"balance"`
 	RequestPerMinute  *int       `json:"request_per_minute"`
 	SpendLimitPerWeek *float64   `json:"spend_limit_per_week"`
 	ExpireTime        *time.Time `json:"expire_time"`
+}
+
+func (r keyPatchRequest) resolvedUserID() int64 {
+	if r.UserID != nil && *r.UserID > 0 {
+		return *r.UserID
+	}
+	if r.TeamID != nil && *r.TeamID > 0 {
+		return *r.TeamID
+	}
+	return 0
+}
+
+func normalizeModelList(modelList []string, allModels bool) auth.StringSlice {
+	if allModels {
+		return auth.StringSlice{"*"}
+	}
+
+	normalized := make(auth.StringSlice, 0, len(modelList))
+	for _, model := range modelList {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if model == "*" {
+			return auth.StringSlice{"*"}
+		}
+		normalized = append(normalized, model)
+	}
+	if len(normalized) == 0 {
+		return auth.StringSlice{"*"}
+	}
+	return normalized
 }
 
 func listKeys(c *gin.Context) {
@@ -526,16 +595,17 @@ func createKey(c *gin.Context) {
 		keyContent = generated
 	}
 
-	modelList := auth.StringSlice(req.ModelList)
-	if len(modelList) == 0 {
-		modelList = auth.StringSlice{"*"}
+	userID := req.resolvedUserID()
+	if userID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+		return
 	}
 
 	key := keyDTO{
 		KeyContent:        keyContent,
 		KeyName:           strings.TrimSpace(req.KeyName),
-		ModelList:         modelList,
-		TeamID:            req.TeamID,
+		ModelList:         normalizeModelList(req.ModelList, req.AllModels),
+		UserID:            userID,
 		OrganizationID:    req.OrganizationID,
 		Balance:           req.Balance,
 		TotalSpend:        0,
@@ -555,6 +625,7 @@ func createKey(c *gin.Context) {
 	defer janusDb.CloseDatabaseConnection(db)
 
 	if err := db.Table("janus_auth_key").
+		Clauses(clause.Returning{}).
 		Omit("key_id", "create_time", "update_time").
 		Create(&key).Error; err != nil {
 		respondDBError(c, "create key failed", err)
@@ -620,15 +691,18 @@ func updateKey(c *gin.Context) {
 		}
 		updates["key_name"] = keyName
 	}
-	if req.ModelList != nil {
-		modelList := auth.StringSlice(*req.ModelList)
-		if len(modelList) == 0 {
-			modelList = auth.StringSlice{"*"}
-		}
-		updates["model_list"] = modelList
+	if req.AllModels != nil && *req.AllModels {
+		updates["model_list"] = auth.StringSlice{"*"}
+	} else if req.ModelList != nil {
+		updates["model_list"] = normalizeModelList(*req.ModelList, false)
 	}
-	if req.TeamID != nil {
-		updates["user_id"] = *req.TeamID
+	if req.UserID != nil || req.TeamID != nil {
+		userID := req.resolvedUserID()
+		if userID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "user_id must be a positive integer"})
+			return
+		}
+		updates["user_id"] = userID
 	}
 	if req.OrganizationID != nil {
 		updates["organization_id"] = *req.OrganizationID
@@ -724,6 +798,13 @@ func parseIDParam(c *gin.Context, name string) (int64, bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+func parseUserIDParam(c *gin.Context) (int64, bool) {
+	if c.Param("user_id") != "" {
+		return parseIDParam(c, "user_id")
+	}
+	return parseIDParam(c, "team_id")
 }
 
 func firstByID(c *gin.Context, query *gorm.DB, out interface{}) bool {

@@ -40,11 +40,19 @@ func (s *StringSlice) Scan(value interface{}) error {
 		*s = nil
 		return nil
 	}
-	bytes, ok := value.([]uint8)
-	if !ok {
+	var str string
+	switch v := value.(type) {
+	case string:
+		str = v
+	case []byte:
+		str = string(v)
+	default:
 		return fmt.Errorf("unsupported data type: %T", value)
 	}
-	str := string(bytes)
+	if str == "" {
+		*s = StringSlice{}
+		return nil
+	}
 	*s = strings.Split(str, ",")
 	return nil
 }
