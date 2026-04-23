@@ -7,9 +7,10 @@ import (
 )
 
 type Team struct {
-	TeamId         int    `gorm:"primaryKey;column:team_id"`
-	TeamName       string `gorm:"column:team_name"`
-	OrganizationId int    `gorm:"column:organization_id"`
+	TeamId         int         `gorm:"primaryKey;column:team_id"`
+	TeamName       string      `gorm:"column:team_name"`
+	ModelList      StringSlice `gorm:"column:model_list"`
+	OrganizationId int         `gorm:"column:organization_id"`
 }
 
 func CreateTeamRecord(teamName string, organizationName string) {
@@ -24,7 +25,11 @@ func CreateTeamRecord(teamName string, organizationName string) {
 		log.Fatal("Organization record not found, name", organizationName)
 		return
 	}
-	result := db.Table("janus_auth_team").Create(&Team{TeamName: teamName, OrganizationId: organization.OrganizationId})
+	result := db.Table("janus_auth_team").Create(&Team{
+		TeamName:       teamName,
+		ModelList:      StringSlice{"*"},
+		OrganizationId: organization.OrganizationId,
+	})
 	if result.Error != nil {
 		log.Fatal("Failed to create team record, err:", result.Error)
 		return

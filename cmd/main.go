@@ -33,7 +33,7 @@ var (
 )
 
 const (
-	keyCacheSyncTTL = 3 * time.Minute
+	keyCacheSyncTTL = 1 * time.Minute
 	keyCacheIdleTTL = 30 * time.Minute
 )
 
@@ -41,6 +41,14 @@ type cachedKey struct {
 	Key          auth.Key
 	LastSyncAt   time.Time
 	LastAccessAt time.Time
+}
+
+type keyValidationResult struct {
+	Key          auth.Key
+	Valid        bool
+	StatusCode   int
+	ErrorCode    string
+	ErrorMessage string
 }
 
 func main() {
@@ -254,31 +262,42 @@ func checkKeyMiddleware(logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		keyContent := c.Request.Header.Get("Authorization")
 		if keyContent == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "no authorization header"})
+			respondAPIError(c, http.StatusUnauthorized, "missing_authorization_header", "no authorization header")
 			c.Abort()
 			return
 		}
 		keyContent = strings.TrimPrefix(keyContent, "Bearer ")
 
-		keyInfo, ok, err := getValidKeyForRequest(keyContent, time.Now())
+		result, err := getValidKeyForRequest(keyContent, time.Now())
 		if err != nil {
 			logger.Error("Failed to validate key from database", zap.String("key", keyContent), zap.Error(err))
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "authorization check unavailable"})
+			respondAPIError(c, http.StatusServiceUnavailable, "authorization_check_unavailable", "authorization check unavailable")
 			c.Abort()
 			return
 		}
-		if !ok {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid authorization key"})
+		if !result.Valid {
+			respondAPIError(c, result.StatusCode, result.ErrorCode, result.ErrorMessage)
 			c.Abort()
 			return
 		}
+		keyInfo := result.Key
 
 		if keyInfo.RequestPerMinute > 0 {
 			ring := proxy.GetOrCreateRequestRing(keyContent, keyInfo.RequestPerMinute)
-			if ring != nil && !ring.Allow() {
-				c.JSON(http.StatusTooManyRequests, gin.H{"error": "reach rate limit"})
-				c.Abort()
-				return
+			if ring != nil {
+				allowed, retryAfter := ring.AllowAt(time.Now())
+				if !allowed {
+					if retryAfter > 0 {
+						retryAfterSeconds := int((retryAfter + time.Second - 1) / time.Second)
+						if retryAfterSeconds < 1 {
+							retryAfterSeconds = 1
+						}
+						c.Header("Retry-After", strconv.Itoa(retryAfterSeconds))
+					}
+					respondAPIError(c, http.StatusTooManyRequests, "rate_limit_exceeded", "reach rate limit")
+					c.Abort()
+					return
+				}
 			}
 		}
 
@@ -295,14 +314,14 @@ func checkKeyMiddleware(logger *zap.Logger) gin.HandlerFunc {
 
 		modelGroup, err := resolveModelGroup(c)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+			respondAPIError(c, http.StatusBadRequest, "invalid_model_group", err.Error())
 			c.Abort()
 			return
 		}
 		c.Set("modelGroup", modelGroup)
 
 		if !isValidModel(modelGroup, keyInfo.ModelList) {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid request model"})
+			respondAPIError(c, http.StatusForbidden, "model_not_allowed", "invalid request model")
 			c.Abort()
 			return
 		}
@@ -316,32 +335,42 @@ func checkKeyMiddleware(logger *zap.Logger) gin.HandlerFunc {
 	}
 }
 
-func getValidKeyForRequest(keyContent string, now time.Time) (auth.Key, bool, error) {
+func getValidKeyForRequest(keyContent string, now time.Time) (keyValidationResult, error) {
 	cached, ok := getCachedKey(keyContent)
 	if ok {
-		if !isKeyLocallyValid(cached.Key, now) {
+		if failure, invalid := invalidKeyResult(cached.Key, now); invalid {
 			deleteCachedKey(keyContent)
 			proxy.RemoveRequestRing(keyContent)
-			return auth.Key{}, false, nil
+			return failure, nil
 		}
 		if now.Sub(cached.LastSyncAt) <= keyCacheSyncTTL {
 			touchCachedKey(keyContent, now)
-			return cached.Key, true, nil
+			return keyValidationResult{Key: cached.Key, Valid: true}, nil
 		}
 	}
 
-	loaded, err := auth.GetValidKeyByContent(keyContent)
+	loaded, err := auth.GetKeyByContent(keyContent)
 	if err != nil {
-		return auth.Key{}, false, err
+		return keyValidationResult{}, err
 	}
 	if loaded == nil {
 		deleteCachedKey(keyContent)
 		proxy.RemoveRequestRing(keyContent)
-		return auth.Key{}, false, nil
+		return keyValidationResult{
+			StatusCode:   http.StatusUnauthorized,
+			ErrorCode:    "invalid_authorization_key",
+			ErrorMessage: "invalid authorization key",
+		}, nil
+	}
+	if failure, invalid := invalidKeyResult(*loaded, now); invalid {
+		deleteCachedKey(keyContent)
+		proxy.RemoveRequestRing(keyContent)
+		return failure, nil
 	}
 
-	upsertCachedKey(*loaded, now, now)
-	return *loaded, true, nil
+	effective := applyEffectiveModelPermissions(*loaded)
+	upsertCachedKey(effective, now, now)
+	return keyValidationResult{Key: effective, Valid: true}, nil
 }
 
 func getCachedKey(keyContent string) (cachedKey, bool) {
@@ -464,6 +493,36 @@ func isValidModel(reqModel string, modelList auth.StringSlice) bool {
 	return false
 }
 
+func applyEffectiveModelPermissions(key auth.Key) auth.Key {
+	key.ModelList = auth.EffectiveModelList(key.TeamModelList, key.ModelList)
+	return key
+}
+
+func invalidKeyResult(key auth.Key, now time.Time) (keyValidationResult, bool) {
+	if key.Balance <= 0 {
+		return keyValidationResult{
+			StatusCode:   http.StatusPaymentRequired,
+			ErrorCode:    "balance_exhausted",
+			ErrorMessage: "authorization key balance exhausted",
+		}, true
+	}
+	if !key.ExpireTime.IsZero() && !key.ExpireTime.After(now) {
+		return keyValidationResult{
+			StatusCode:   http.StatusUnauthorized,
+			ErrorCode:    "authorization_key_expired",
+			ErrorMessage: "authorization key expired",
+		}, true
+	}
+	return keyValidationResult{}, false
+}
+
+func respondAPIError(c *gin.Context, statusCode int, code string, message string) {
+	c.JSON(statusCode, gin.H{
+		"code":  code,
+		"error": message,
+	})
+}
+
 func startBackgroundTasks(logger *zap.Logger) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
@@ -505,7 +564,7 @@ func refreshCachedKeys(logger *zap.Logger) {
 			continue
 		}
 
-		upsertCachedKey(*latest, now, keyInfo.LastAccessAt)
+		upsertCachedKey(applyEffectiveModelPermissions(*latest), now, keyInfo.LastAccessAt)
 	}
 }
 

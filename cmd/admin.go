@@ -308,21 +308,26 @@ func deleteOrganization(c *gin.Context) {
 }
 
 type teamDTO struct {
-	TeamID         int64     `gorm:"primaryKey;autoIncrement;column:team_id" json:"team_id"`
-	TeamName       string    `gorm:"column:team_name" json:"team_name"`
-	OrganizationID int64     `gorm:"column:organization_id" json:"organization_id"`
-	CreateTime     time.Time `gorm:"column:create_time" json:"-"`
-	UpdateTime     time.Time `gorm:"column:update_time" json:"-"`
+	TeamID         int64            `gorm:"primaryKey;autoIncrement;column:team_id" json:"team_id"`
+	TeamName       string           `gorm:"column:team_name" json:"team_name"`
+	ModelList      auth.StringSlice `gorm:"column:model_list" json:"model_list"`
+	OrganizationID int64            `gorm:"column:organization_id" json:"organization_id"`
+	CreateTime     time.Time        `gorm:"column:create_time" json:"-"`
+	UpdateTime     time.Time        `gorm:"column:update_time" json:"-"`
 }
 
 type teamRequest struct {
-	TeamName       string `json:"team_name" binding:"required"`
-	OrganizationID int64  `json:"organization_id" binding:"required"`
+	TeamName       string   `json:"team_name" binding:"required"`
+	AllModels      bool     `json:"all_models"`
+	ModelList      []string `json:"model_list"`
+	OrganizationID int64    `json:"organization_id" binding:"required"`
 }
 
 type teamPatchRequest struct {
-	TeamName       *string `json:"team_name"`
-	OrganizationID *int64  `json:"organization_id"`
+	TeamName       *string   `json:"team_name"`
+	AllModels      *bool     `json:"all_models"`
+	ModelList      *[]string `json:"model_list"`
+	OrganizationID *int64    `json:"organization_id"`
 }
 
 func listTeams(c *gin.Context) {
@@ -347,6 +352,7 @@ func createTeam(c *gin.Context) {
 	}
 	team := teamDTO{
 		TeamName:       strings.TrimSpace(req.TeamName),
+		ModelList:      normalizeModelList(req.ModelList, req.AllModels),
 		OrganizationID: req.OrganizationID,
 	}
 	if team.TeamName == "" {
@@ -408,6 +414,11 @@ func updateTeam(c *gin.Context) {
 		}
 		updates["team_name"] = name
 	}
+	if req.AllModels != nil && *req.AllModels {
+		updates["model_list"] = auth.StringSlice{"*"}
+	} else if req.ModelList != nil {
+		updates["model_list"] = normalizeModelList(*req.ModelList, false)
+	}
 	if req.OrganizationID != nil {
 		updates["organization_id"] = *req.OrganizationID
 	}
@@ -431,6 +442,7 @@ func updateTeam(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "team not found"})
 		return
 	}
+	invalidateTeamKeyCache(db, id)
 	getTeam(c)
 }
 
@@ -720,6 +732,20 @@ func deleteKey(c *gin.Context) {
 func invalidateKeyCache(keyContent string) {
 	deleteCachedKey(keyContent)
 	proxy.RemoveRequestRing(keyContent)
+}
+
+func invalidateTeamKeyCache(db *gorm.DB, teamID int64) {
+	if db == nil || teamID <= 0 {
+		return
+	}
+
+	var keyContents []string
+	if err := db.Table("janus_auth_key").Where("team_id = ?", teamID).Pluck("key_content", &keyContents).Error; err != nil {
+		return
+	}
+	for _, keyContent := range keyContents {
+		invalidateKeyCache(keyContent)
+	}
 }
 
 func generateKeyContent() (string, error) {

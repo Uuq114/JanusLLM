@@ -17,6 +17,7 @@ type Key struct {
 	KeyContent     string      `gorm:"column:key_content"`
 	KeyName        string      `gorm:"column:key_name"`
 	ModelList      StringSlice `gorm:"column:model_list"`
+	TeamModelList  StringSlice `gorm:"column:team_model_list"`
 	TeamId         int         `gorm:"column:team_id"`
 	OrganizationId int         `gorm:"column:organization_id"`
 
@@ -64,6 +65,65 @@ func (s *StringSlice) Value() (driver.Value, error) {
 	return strings.Join(*s, ","), nil
 }
 
+func EffectiveModelList(teamModelList StringSlice, keyModelList StringSlice) StringSlice {
+	team := normalizedPermissionList(teamModelList)
+	key := normalizedPermissionList(keyModelList)
+
+	if isWildcardModelList(team) && isWildcardModelList(key) {
+		return StringSlice{"*"}
+	}
+	if isWildcardModelList(team) {
+		return key
+	}
+	if isWildcardModelList(key) {
+		return team
+	}
+
+	allowed := make(map[string]struct{}, len(team))
+	for _, model := range team {
+		allowed[model] = struct{}{}
+	}
+
+	effective := make(StringSlice, 0, len(key))
+	for _, model := range key {
+		if _, ok := allowed[model]; ok {
+			effective = append(effective, model)
+		}
+	}
+	return effective
+}
+
+func normalizedPermissionList(modelList StringSlice) StringSlice {
+	if len(modelList) == 0 {
+		return StringSlice{"*"}
+	}
+
+	seen := make(map[string]struct{}, len(modelList))
+	normalized := make(StringSlice, 0, len(modelList))
+	for _, model := range modelList {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if model == "*" {
+			return StringSlice{"*"}
+		}
+		if _, ok := seen[model]; ok {
+			continue
+		}
+		seen[model] = struct{}{}
+		normalized = append(normalized, model)
+	}
+	if len(normalized) == 0 {
+		return StringSlice{"*"}
+	}
+	return normalized
+}
+
+func isWildcardModelList(modelList StringSlice) bool {
+	return len(modelList) == 1 && modelList[0] == "*"
+}
+
 func CreateKeyRecord(keyContent string, keyName string, modelList []string, teamName string, organizationName string,
 	balance float64, requestPerMinute int, spendLimitPerWeek float64) {
 	db, err := janusDb.ConnectDatabase()
@@ -109,6 +169,28 @@ func CheckKeyRecord(keyContent string) bool {
 	return key != nil
 }
 
+func GetKeyByContent(keyContent string) (*Key, error) {
+	db, err := janusDb.ConnectDatabase()
+	if err != nil {
+		log.Printf("GetKeyByContent: connect database failed: %v", err)
+		return nil, err
+	}
+	defer janusDb.CloseDatabaseConnection(db)
+
+	var key Key
+	result := keyQuery(db).
+		Where("key_content = ?", keyContent).
+		First(&key)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		log.Printf("GetKeyByContent: query failed: %v", result.Error)
+		return nil, result.Error
+	}
+	return &key, nil
+}
+
 func GetValidKeyByContent(keyContent string) (*Key, error) {
 	db, err := janusDb.ConnectDatabase()
 	if err != nil {
@@ -118,7 +200,7 @@ func GetValidKeyByContent(keyContent string) (*Key, error) {
 	defer janusDb.CloseDatabaseConnection(db)
 
 	var key Key
-	result := db.Table("janus_auth_key").
+	result := keyQuery(db).
 		Where("key_content = ?", keyContent).
 		Where("balance > 0").
 		Where("expire_time > ? OR expire_time IS NULL", time.Now()).
@@ -142,7 +224,7 @@ func GetAllValidKey() []Key {
 	defer janusDb.CloseDatabaseConnection(db)
 
 	var keys []Key
-	result := db.Table("janus_auth_key").
+	result := keyQuery(db).
 		Where("balance > 0").
 		Where("expire_time > ? OR expire_time IS NULL", time.Now()).
 		Find(&keys)
@@ -165,4 +247,10 @@ func DeleteKeyRecord(keyContent string) {
 	if result.Error != nil {
 		log.Printf("DeleteKeyRecord: delete failed: %v", result.Error)
 	}
+}
+
+func keyQuery(db *gorm.DB) *gorm.DB {
+	return db.Table("janus_auth_key").
+		Select("janus_auth_key.*, janus_auth_team.model_list AS team_model_list").
+		Joins("JOIN janus_auth_team ON janus_auth_team.team_id = janus_auth_key.team_id")
 }

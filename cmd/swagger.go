@@ -53,6 +53,7 @@ func handleOpenAPISpec(c *gin.Context) {
 				"ErrorResponse": gin.H{
 					"type": "object",
 					"properties": gin.H{
+						"code":  gin.H{"type": "string", "example": "rate_limit_exceeded"},
 						"error": gin.H{"type": "string"},
 					},
 				},
@@ -131,6 +132,7 @@ func handleOpenAPISpec(c *gin.Context) {
 					"properties": gin.H{
 						"team_id":         gin.H{"type": "integer", "example": 1},
 						"team_name":       gin.H{"type": "string", "example": "platform-team"},
+						"model_list":      gin.H{"type": "array", "items": gin.H{"type": "string"}, "example": []string{"*"}},
 						"organization_id": gin.H{"type": "integer", "example": 1},
 					},
 				},
@@ -139,6 +141,8 @@ func handleOpenAPISpec(c *gin.Context) {
 					"required": []string{"team_name", "organization_id"},
 					"properties": gin.H{
 						"team_name":       gin.H{"type": "string", "example": "platform-team"},
+						"all_models":      gin.H{"type": "boolean", "description": "When true, grants all models to the team and stores model_list as [\"*\"].", "example": true},
+						"model_list":      gin.H{"type": "array", "items": gin.H{"type": "string"}, "description": "Use [\"*\"] or all_models=true to grant all models.", "example": []string{"*"}},
 						"organization_id": gin.H{"type": "integer", "example": 1},
 					},
 				},
@@ -196,7 +200,20 @@ func handleOpenAPISpec(c *gin.Context) {
 					"security": []gin.H{{"bearerAuth": []string{}}},
 					"responses": gin.H{
 						"200": jsonResponse("Accessible model list", gin.H{"$ref": "#/components/schemas/ModelsResponse"}),
-						"401": errorResponse("Unauthorized"),
+						"401": errorResponseWithExamples("Unauthorized", map[string]gin.H{
+							"missing_authorization_header": {"value": gin.H{"code": "missing_authorization_header", "error": "no authorization header"}},
+							"invalid_authorization_key":    {"value": gin.H{"code": "invalid_authorization_key", "error": "invalid authorization key"}},
+							"authorization_key_expired":    {"value": gin.H{"code": "authorization_key_expired", "error": "authorization key expired"}},
+						}),
+						"402": errorResponseWithExamples("Balance exhausted", map[string]gin.H{
+							"balance_exhausted": {"value": gin.H{"code": "balance_exhausted", "error": "authorization key balance exhausted"}},
+						}),
+						"429": errorResponseWithExamples("Rate limited", map[string]gin.H{
+							"rate_limit_exceeded": {"value": gin.H{"code": "rate_limit_exceeded", "error": "reach rate limit"}},
+						}),
+						"503": errorResponseWithExamples("Authorization check unavailable", map[string]gin.H{
+							"authorization_check_unavailable": {"value": gin.H{"code": "authorization_check_unavailable", "error": "authorization check unavailable"}},
+						}),
 					},
 				},
 			},
@@ -234,9 +251,24 @@ func nativeProxyPath(summary string, schemaRef string) gin.H {
 					"additionalProperties": true,
 				}),
 				"400": errorResponse("Bad request"),
-				"401": errorResponse("Unauthorized"),
-				"429": errorResponse("Rate limited"),
+				"401": errorResponseWithExamples("Unauthorized", map[string]gin.H{
+					"missing_authorization_header": {"value": gin.H{"code": "missing_authorization_header", "error": "no authorization header"}},
+					"invalid_authorization_key":    {"value": gin.H{"code": "invalid_authorization_key", "error": "invalid authorization key"}},
+					"authorization_key_expired":    {"value": gin.H{"code": "authorization_key_expired", "error": "authorization key expired"}},
+				}),
+				"402": errorResponseWithExamples("Balance exhausted", map[string]gin.H{
+					"balance_exhausted": {"value": gin.H{"code": "balance_exhausted", "error": "authorization key balance exhausted"}},
+				}),
+				"403": errorResponseWithExamples("Forbidden", map[string]gin.H{
+					"model_not_allowed": {"value": gin.H{"code": "model_not_allowed", "error": "invalid request model"}},
+				}),
+				"429": errorResponseWithExamples("Rate limited", map[string]gin.H{
+					"rate_limit_exceeded": {"value": gin.H{"code": "rate_limit_exceeded", "error": "reach rate limit"}},
+				}),
 				"502": errorResponse("Upstream failed"),
+				"503": errorResponseWithExamples("Authorization check unavailable", map[string]gin.H{
+					"authorization_check_unavailable": {"value": gin.H{"code": "authorization_check_unavailable", "error": "authorization check unavailable"}},
+				}),
 			},
 		},
 	}
@@ -255,6 +287,14 @@ func jsonResponse(description string, schema gin.H) gin.H {
 
 func errorResponse(description string) gin.H {
 	return jsonResponse(description, gin.H{"$ref": "#/components/schemas/ErrorResponse"})
+}
+
+func errorResponseWithExamples(description string, examples map[string]gin.H) gin.H {
+	response := errorResponse(description)
+	content := response["content"].(gin.H)
+	applicationJSON := content["application/json"].(gin.H)
+	applicationJSON["examples"] = examples
+	return response
 }
 
 func adminCollectionPath(tag string, name string, responseSchemaRef string, requestSchemaRef string) gin.H {

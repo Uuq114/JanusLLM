@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS janus_auth_organization (
 CREATE TABLE IF NOT EXISTS janus_auth_team (
   team_id BIGSERIAL PRIMARY KEY,
   team_name TEXT NOT NULL UNIQUE,
+  model_list TEXT NOT NULL DEFAULT '*',
   organization_id BIGINT NOT NULL REFERENCES janus_auth_organization(organization_id) ON DELETE RESTRICT,
   create_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   update_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
