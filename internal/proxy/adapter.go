@@ -27,7 +27,7 @@ func (a *OpenAIAdapter) BuildRequest(c *gin.Context, endpointPath string, upstre
 		bodyReader = bytes.NewBuffer(rawBody)
 	}
 
-	req, err := http.NewRequest(method, strings.TrimRight(upstreamModel.BaseURL, "/")+endpointPath, bodyReader)
+	req, err := http.NewRequest(method, buildUpstreamURL(upstreamModel.BaseURL, endpointPath), bodyReader)
 	if err != nil {
 		return nil, err
 	}
@@ -36,8 +36,10 @@ func (a *OpenAIAdapter) BuildRequest(c *gin.Context, endpointPath string, upstre
 	if method != http.MethodGet {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if upstreamModel.APIKey != "" {
+	if hasUpstreamAPIKey(upstreamModel.APIKey) {
 		req.Header.Set("Authorization", "Bearer "+upstreamModel.APIKey)
+	} else {
+		req.Header.Del("Authorization")
 	}
 	return req, nil
 }
@@ -51,7 +53,7 @@ func (a *AnthropicAdapter) BuildRequest(c *gin.Context, endpointPath string, ups
 		bodyReader = bytes.NewBuffer(rawBody)
 	}
 
-	req, err := http.NewRequest(method, strings.TrimRight(upstreamModel.BaseURL, "/")+endpointPath, bodyReader)
+	req, err := http.NewRequest(method, buildUpstreamURL(upstreamModel.BaseURL, endpointPath), bodyReader)
 	if err != nil {
 		return nil, err
 	}
@@ -60,8 +62,10 @@ func (a *AnthropicAdapter) BuildRequest(c *gin.Context, endpointPath string, ups
 	if method != http.MethodGet {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if upstreamModel.APIKey != "" {
+	if hasUpstreamAPIKey(upstreamModel.APIKey) {
 		req.Header.Set("x-api-key", upstreamModel.APIKey)
+		req.Header.Del("Authorization")
+	} else {
 		req.Header.Del("Authorization")
 	}
 	if req.Header.Get("anthropic-version") == "" {
@@ -90,4 +94,18 @@ func copyHeaders(req *http.Request, c *gin.Context) {
 	if req.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", "application/json")
 	}
+}
+
+func buildUpstreamURL(baseURL string, endpointPath string) string {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	path := "/" + strings.TrimLeft(endpointPath, "/")
+	if strings.HasSuffix(base, "/v1") && strings.HasPrefix(path, "/v1/") {
+		path = strings.TrimPrefix(path, "/v1")
+	}
+	return base + path
+}
+
+func hasUpstreamAPIKey(apiKey string) bool {
+	apiKey = strings.TrimSpace(apiKey)
+	return apiKey != "" && !strings.EqualFold(apiKey, "none")
 }

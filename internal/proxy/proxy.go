@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -245,6 +246,11 @@ func (p *Proxy) forwardOnce(c *gin.Context, endpointPath string, modelGroup stri
 		timeoutSeconds = 60
 	}
 	client := &http.Client{Timeout: time.Duration(timeoutSeconds) * time.Second}
+	if upstreamModel.SkipTLSVerify {
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {

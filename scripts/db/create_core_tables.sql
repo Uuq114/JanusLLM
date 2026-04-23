@@ -20,9 +20,9 @@ CREATE TABLE IF NOT EXISTS janus_auth_organization (
   update_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS janus_auth_user (
-  user_id BIGSERIAL PRIMARY KEY,
-  user_name TEXT NOT NULL UNIQUE,
+CREATE TABLE IF NOT EXISTS janus_auth_team (
+  team_id BIGSERIAL PRIMARY KEY,
+  team_name TEXT NOT NULL UNIQUE,
   organization_id BIGINT NOT NULL REFERENCES janus_auth_organization(organization_id) ON DELETE RESTRICT,
   create_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   update_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS janus_auth_key (
   key_name TEXT NOT NULL,
   -- Kept as comma-separated string for compatibility with current code.
   model_list TEXT NOT NULL DEFAULT '*',
-  user_id BIGINT NOT NULL REFERENCES janus_auth_user(user_id) ON DELETE RESTRICT,
+  team_id BIGINT NOT NULL REFERENCES janus_auth_team(team_id) ON DELETE RESTRICT,
   organization_id BIGINT NOT NULL REFERENCES janus_auth_organization(organization_id) ON DELETE RESTRICT,
   balance NUMERIC(20, 8) NOT NULL DEFAULT 0,
   total_spend NUMERIC(20, 8) NOT NULL DEFAULT 0,
@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS janus_auth_key (
   expire_time TIMESTAMPTZ
 );
 
+CREATE INDEX IF NOT EXISTS idx_auth_key_team_id ON janus_auth_key (team_id);
 CREATE INDEX IF NOT EXISTS idx_auth_key_org_id ON janus_auth_key (organization_id);
 CREATE INDEX IF NOT EXISTS idx_auth_key_expire_time ON janus_auth_key (expire_time);
 CREATE INDEX IF NOT EXISTS idx_auth_key_balance ON janus_auth_key (balance);
@@ -88,6 +89,7 @@ CREATE TABLE IF NOT EXISTS janus_model_endpoint (
   weight INTEGER NOT NULL DEFAULT 100 CHECK (weight > 0),
   timeout_seconds INTEGER NOT NULL DEFAULT 60 CHECK (timeout_seconds > 0),
   retry_times INTEGER NOT NULL DEFAULT 1 CHECK (retry_times >= 0),
+  skip_tls_verify BOOLEAN NOT NULL DEFAULT FALSE,
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   create_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   update_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -105,7 +107,7 @@ CREATE TABLE IF NOT EXISTS janus_spend_log (
   record_id BIGSERIAL PRIMARY KEY,
   request_id TEXT NOT NULL,
   auth_key TEXT NOT NULL,
-  user_id BIGINT NOT NULL REFERENCES janus_auth_user(user_id) ON DELETE RESTRICT,
+  team_id BIGINT NOT NULL REFERENCES janus_auth_team(team_id) ON DELETE RESTRICT,
   organization_id BIGINT NOT NULL REFERENCES janus_auth_organization(organization_id) ON DELETE RESTRICT,
   model_group TEXT NOT NULL,
   spend NUMERIC(20, 8) NOT NULL DEFAULT 0,
@@ -117,6 +119,7 @@ CREATE TABLE IF NOT EXISTS janus_spend_log (
 
 CREATE INDEX IF NOT EXISTS idx_spend_log_create_time ON janus_spend_log (create_time);
 CREATE INDEX IF NOT EXISTS idx_spend_log_auth_key ON janus_spend_log (auth_key);
+CREATE INDEX IF NOT EXISTS idx_spend_log_team_time ON janus_spend_log (team_id, create_time);
 CREATE INDEX IF NOT EXISTS idx_spend_log_org_time ON janus_spend_log (organization_id, create_time);
 
 -- Optional summary table for faster dashboard query.
@@ -140,9 +143,9 @@ BEFORE UPDATE ON janus_auth_organization
 FOR EACH ROW
 EXECUTE FUNCTION janus_set_update_time();
 
-DROP TRIGGER IF EXISTS trg_user_update_time ON janus_auth_user;
-CREATE TRIGGER trg_user_update_time
-BEFORE UPDATE ON janus_auth_user
+DROP TRIGGER IF EXISTS trg_team_update_time ON janus_auth_team;
+CREATE TRIGGER trg_team_update_time
+BEFORE UPDATE ON janus_auth_team
 FOR EACH ROW
 EXECUTE FUNCTION janus_set_update_time();
 

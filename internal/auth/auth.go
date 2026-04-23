@@ -17,7 +17,7 @@ type Key struct {
 	KeyContent     string      `gorm:"column:key_content"`
 	KeyName        string      `gorm:"column:key_name"`
 	ModelList      StringSlice `gorm:"column:model_list"`
-	UserId         int         `gorm:"column:user_id"`
+	TeamId         int         `gorm:"column:team_id"`
 	OrganizationId int         `gorm:"column:organization_id"`
 
 	Balance           float64 `gorm:"column:balance"`
@@ -64,7 +64,7 @@ func (s *StringSlice) Value() (driver.Value, error) {
 	return strings.Join(*s, ","), nil
 }
 
-func CreateKeyRecord(keyContent string, keyName string, modelList []string, userName string, organizationName string,
+func CreateKeyRecord(keyContent string, keyName string, modelList []string, teamName string, organizationName string,
 	balance float64, requestPerMinute int, spendLimitPerWeek float64) {
 	db, err := janusDb.ConnectDatabase()
 	if err != nil {
@@ -73,9 +73,9 @@ func CreateKeyRecord(keyContent string, keyName string, modelList []string, user
 	}
 	defer janusDb.CloseDatabaseConnection(db)
 
-	user := GetUserRecord(userName)
-	if user == nil {
-		log.Printf("CreateKeyRecord: user record not found: %s", userName)
+	team := GetTeamRecord(teamName)
+	if team == nil {
+		log.Printf("CreateKeyRecord: team record not found: %s", teamName)
 		return
 	}
 	organization := GetOrganizationRecord(organizationName)
@@ -88,7 +88,7 @@ func CreateKeyRecord(keyContent string, keyName string, modelList []string, user
 		KeyContent:        keyContent,
 		KeyName:           keyName,
 		ModelList:         modelList,
-		UserId:            user.UserId,
+		TeamId:            team.TeamId,
 		OrganizationId:    organization.OrganizationId,
 		Balance:           balance,
 		TotalSpend:        0,

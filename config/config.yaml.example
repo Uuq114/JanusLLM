@@ -21,6 +21,8 @@ models:
           api_key: "<PROVIDER_API_KEY_FROM_SECRET>"
           timeout_seconds: 60
           retry_times: 1
+          # Only use true for internal/self-signed upstream certificates.
+          skip_tls_verify: false
 
     - name: claude-3-sonnet
       strategy: weighted
@@ -36,6 +38,7 @@ models:
           weight: 100
           timeout_seconds: 60
           retry_times: 1
+          skip_tls_verify: false
 
 secrets:
   # Local/dev can put plain DSN here for testing.

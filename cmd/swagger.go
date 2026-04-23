@@ -34,7 +34,7 @@ func handleOpenAPISpec(c *gin.Context) {
 		"tags": []gin.H{
 			{"name": "LLM API", "description": "OpenAI/Anthropic compatible gateway endpoints."},
 			{"name": "Admin Organizations", "description": "Management API for organizations."},
-			{"name": "Admin Users", "description": "Management API for gateway API users."},
+			{"name": "Admin Teams", "description": "Management API for teams."},
 			{"name": "Admin Keys", "description": "Management API for API keys."},
 		},
 		"components": gin.H{
@@ -126,19 +126,19 @@ func handleOpenAPISpec(c *gin.Context) {
 						"organization_name": gin.H{"type": "string", "example": "default-org"},
 					},
 				},
-				"User": gin.H{
+				"Team": gin.H{
 					"type": "object",
 					"properties": gin.H{
-						"user_id":         gin.H{"type": "integer", "example": 1},
-						"user_name":       gin.H{"type": "string", "example": "platform-user"},
+						"team_id":         gin.H{"type": "integer", "example": 1},
+						"team_name":       gin.H{"type": "string", "example": "platform-team"},
 						"organization_id": gin.H{"type": "integer", "example": 1},
 					},
 				},
-				"UserRequest": gin.H{
+				"TeamRequest": gin.H{
 					"type":     "object",
-					"required": []string{"user_name", "organization_id"},
+					"required": []string{"team_name", "organization_id"},
 					"properties": gin.H{
-						"user_name":       gin.H{"type": "string", "example": "platform-user"},
+						"team_name":       gin.H{"type": "string", "example": "platform-team"},
 						"organization_id": gin.H{"type": "integer", "example": 1},
 					},
 				},
@@ -149,7 +149,7 @@ func handleOpenAPISpec(c *gin.Context) {
 						"key_content":          gin.H{"type": "string", "example": "sk-..."},
 						"key_name":             gin.H{"type": "string", "example": "demo-key"},
 						"model_list":           gin.H{"type": "array", "items": gin.H{"type": "string"}, "example": []string{"*"}},
-						"user_id":              gin.H{"type": "integer", "example": 1},
+						"team_id":              gin.H{"type": "integer", "example": 1},
 						"organization_id":      gin.H{"type": "integer", "example": 1},
 						"balance":              gin.H{"type": "number", "example": 100},
 						"total_spend":          gin.H{"type": "number", "example": 0},
@@ -160,13 +160,13 @@ func handleOpenAPISpec(c *gin.Context) {
 				},
 				"KeyRequest": gin.H{
 					"type":     "object",
-					"required": []string{"key_name", "user_id", "organization_id"},
+					"required": []string{"key_name", "team_id", "organization_id"},
 					"properties": gin.H{
 						"key_content":          gin.H{"type": "string", "description": "Optional. Server generates one when omitted."},
 						"key_name":             gin.H{"type": "string", "example": "demo-key"},
 						"all_models":           gin.H{"type": "boolean", "description": "When true, grants all models and stores model_list as [\"*\"].", "example": true},
 						"model_list":           gin.H{"type": "array", "items": gin.H{"type": "string"}, "description": "Use [\"*\"] or all_models=true to grant all models.", "example": []string{"*"}},
-						"user_id":              gin.H{"type": "integer", "example": 1},
+						"team_id":              gin.H{"type": "integer", "example": 1},
 						"organization_id":      gin.H{"type": "integer", "example": 1},
 						"balance":              gin.H{"type": "number", "example": 100},
 						"request_per_minute":   gin.H{"type": "integer", "example": 60},
@@ -206,8 +206,8 @@ func handleOpenAPISpec(c *gin.Context) {
 			"/v1/messages":                              nativeProxyPath("Anthropic messages", "#/components/schemas/NativeModelRequest"),
 			"/v1/admin/organizations":                   adminCollectionPath("Admin Organizations", "Organizations", "#/components/schemas/Organization", "#/components/schemas/OrganizationRequest"),
 			"/v1/admin/organizations/{organization_id}": adminItemPath("Admin Organizations", "Organization", "organization_id", "#/components/schemas/Organization", "#/components/schemas/OrganizationRequest"),
-			"/v1/admin/users":                           adminCollectionPath("Admin Users", "Users", "#/components/schemas/User", "#/components/schemas/UserRequest"),
-			"/v1/admin/users/{user_id}":                 adminItemPath("Admin Users", "User", "user_id", "#/components/schemas/User", "#/components/schemas/UserRequest"),
+			"/v1/admin/teams":                           adminCollectionPath("Admin Teams", "Teams", "#/components/schemas/Team", "#/components/schemas/TeamRequest"),
+			"/v1/admin/teams/{team_id}":                 adminItemPath("Admin Teams", "Team", "team_id", "#/components/schemas/Team", "#/components/schemas/TeamRequest"),
 			"/v1/admin/keys":                            adminCollectionPath("Admin Keys", "Keys", "#/components/schemas/Key", "#/components/schemas/KeyRequest"),
 			"/v1/admin/keys/{key_id}":                   adminItemPath("Admin Keys", "Key", "key_id", "#/components/schemas/Key", "#/components/schemas/KeyRequest"),
 		},

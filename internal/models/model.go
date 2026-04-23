@@ -10,6 +10,7 @@ type ModelConfig struct {
 	Temperature    float64 `yaml:"temperature"`
 	TimeoutSeconds int     `yaml:"timeout_seconds"`
 	RetryTimes     int     `yaml:"retry_times"`
+	SkipTLSVerify  bool    `yaml:"skip_tls_verify"`
 }
 
 type ModelGroup struct {

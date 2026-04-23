@@ -20,7 +20,7 @@ type SpendRecord struct {
 	RecordId         int       `gorm:"primaryKey;column:record_id"`
 	RequestId        string    `gorm:"column:request_id"`
 	AuthKey          string    `gorm:"column:auth_key"`
-	UserId           int       `gorm:"column:user_id"`
+	TeamId           int       `gorm:"column:team_id"`
 	OrganizationId   int       `gorm:"column:organization_id"`
 	ModelGroup       string    `gorm:"column:model_group"`
 	Spend            float64   `gorm:"column:spend"`
@@ -77,7 +77,7 @@ func CreateSpendRecord(c *gin.Context, ch chan<- SpendRecord) {
 	record := SpendRecord{
 		RequestId:        upstreamResp.Id,
 		AuthKey:          key.KeyContent,
-		UserId:           key.UserId,
+		TeamId:           key.TeamId,
 		OrganizationId:   key.OrganizationId,
 		ModelGroup:       model,
 		Spend:            spend,

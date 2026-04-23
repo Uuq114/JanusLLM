@@ -286,7 +286,7 @@ func checkKeyMiddleware(logger *zap.Logger) gin.HandlerFunc {
 		if c.Request.URL.Path == "/v1/models" {
 			logger.Info("Key authorized",
 				zap.String("key name", keyInfo.KeyName),
-				zap.Int("user id", keyInfo.UserId),
+				zap.Int("team id", keyInfo.TeamId),
 				zap.Int("organization id", keyInfo.OrganizationId),
 			)
 			c.Next()
@@ -309,7 +309,7 @@ func checkKeyMiddleware(logger *zap.Logger) gin.HandlerFunc {
 
 		logger.Info("Key authorized",
 			zap.String("key name", keyInfo.KeyName),
-			zap.Int("user id", keyInfo.UserId),
+			zap.Int("team id", keyInfo.TeamId),
 			zap.Int("organization id", keyInfo.OrganizationId),
 		)
 		c.Next()
