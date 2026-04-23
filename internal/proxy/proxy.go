@@ -206,6 +206,9 @@ func (p *Proxy) HandleRequest(c *gin.Context) {
 		lastErr = err
 		if !shouldRetry {
 			logger.Warn("request failed without retry", zap.Error(err), zap.Int("status", status), zap.Int("attempt", attempt+1))
+			if c.Writer.Written() {
+				return
+			}
 			c.JSON(status, gin.H{"error": err.Error()})
 			return
 		}
@@ -219,7 +222,13 @@ func (p *Proxy) HandleRequest(c *gin.Context) {
 	}
 
 	if lastErr != nil {
+		if c.Writer.Written() {
+			return
+		}
 		c.JSON(http.StatusBadGateway, gin.H{"error": lastErr.Error()})
+		return
+	}
+	if c.Writer.Written() {
 		return
 	}
 	c.JSON(http.StatusBadGateway, gin.H{"error": "all upstream models failed"})
@@ -271,7 +280,7 @@ func (p *Proxy) forwardOnce(c *gin.Context, endpointPath string, modelGroup stri
 		c.Status(resp.StatusCode)
 		streamUsage, streamErr := streamToClient(c, resp.Body)
 		if streamErr != nil {
-			return http.StatusBadGateway, true, streamErr
+			return http.StatusBadGateway, false, streamErr
 		}
 		if len(streamUsage) > 0 {
 			c.Set("upstreamResp", streamUsage)

@@ -123,8 +123,16 @@ func CreateKeySpendRecord(c *gin.Context, ch chan<- float64) {
 	if ch == nil {
 		return
 	}
-	spend := c.MustGet("spend").(float64)
-	ch <- spend
+	spendValue, exists := c.Get("spend")
+	if !exists {
+		return
+	}
+	spendAmount, ok := spendValue.(float64)
+	if !ok {
+		log.Printf("CreateKeySpendRecord: spend type mismatch: %T", spendValue)
+		return
+	}
+	ch <- spendAmount
 }
 
 func UpdateKeySpendRecord(totalSpend float64, key string) {
