@@ -145,7 +145,7 @@ func loadJanusConfig(path string) (*JanusConfig, error) {
 		return nil, errors.New("database_url is empty; set secrets.database_url or JANUS_DATABASE_URL")
 	}
 
-	janusDb.MysqlDsn = config.Secrets.DatabaseURL
+	janusDb.DatabaseDsn = config.Secrets.DatabaseURL
 	for _, group := range config.Models.ModelGroups {
 		spend.ModelPrice[group.Name] = []float64{group.CostPerInputToken, group.CostPerOutputToken}
 	}

@@ -1,4 +1,4 @@
-﻿BEGIN;
+BEGIN;
 
 -- Shared trigger function for update_time columns.
 CREATE OR REPLACE FUNCTION janus_set_update_time()
