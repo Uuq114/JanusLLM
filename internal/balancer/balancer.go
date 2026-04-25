@@ -7,16 +7,16 @@ import (
 	"github.com/Uuq114/JanusLLM/internal/models"
 )
 
-// balancer
-
+// Balancer chooses one upstream model endpoint for each request.
 type Balancer interface {
 	Next() *models.ModelConfig
+	Models() []*models.ModelConfig
 	AddModel(model *models.ModelConfig)
 	RemoveModel(modelName string)
+	Size() int
 }
 
-// round-robin balancer
-
+// RoundRobinBalancer picks endpoints in order.
 type RoundRobinBalancer struct {
 	models []*models.ModelConfig
 	index  uint64
@@ -47,6 +47,15 @@ func (rb *RoundRobinBalancer) AddModel(model *models.ModelConfig) {
 	rb.models = append(rb.models, model)
 }
 
+func (rb *RoundRobinBalancer) Models() []*models.ModelConfig {
+	rb.mu.RLock()
+	defer rb.mu.RUnlock()
+
+	out := make([]*models.ModelConfig, len(rb.models))
+	copy(out, rb.models)
+	return out
+}
+
 func (rb *RoundRobinBalancer) RemoveModel(modelName string) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
@@ -59,8 +68,13 @@ func (rb *RoundRobinBalancer) RemoveModel(modelName string) {
 	}
 }
 
-// weighted balancer
+func (rb *RoundRobinBalancer) Size() int {
+	rb.mu.RLock()
+	defer rb.mu.RUnlock()
+	return len(rb.models)
+}
 
+// WeightedBalancer picks endpoints by configured weight.
 type WeightedBalancer struct {
 	models []*models.ModelConfig
 	index  uint64
@@ -81,16 +95,16 @@ func (wb *WeightedBalancer) Next() *models.ModelConfig {
 		return nil
 	}
 
-	// 计算总权重
 	totalWeight := 0
 	for _, model := range wb.models {
 		totalWeight += model.Weight
 	}
+	if totalWeight <= 0 {
+		index := atomic.AddUint64(&wb.index, 1) % uint64(len(wb.models))
+		return wb.models[index]
+	}
 
-	// 使用原子操作获取下一个索引
 	index := atomic.AddUint64(&wb.index, 1)
-
-	// 根据权重选择模型
 	currentWeight := 0
 	for _, model := range wb.models {
 		currentWeight += model.Weight
@@ -108,6 +122,15 @@ func (wb *WeightedBalancer) AddModel(model *models.ModelConfig) {
 	wb.models = append(wb.models, model)
 }
 
+func (wb *WeightedBalancer) Models() []*models.ModelConfig {
+	wb.mu.RLock()
+	defer wb.mu.RUnlock()
+
+	out := make([]*models.ModelConfig, len(wb.models))
+	copy(out, wb.models)
+	return out
+}
+
 func (wb *WeightedBalancer) RemoveModel(modelName string) {
 	wb.mu.Lock()
 	defer wb.mu.Unlock()
@@ -118,4 +141,10 @@ func (wb *WeightedBalancer) RemoveModel(modelName string) {
 			break
 		}
 	}
+}
+
+func (wb *WeightedBalancer) Size() int {
+	wb.mu.RLock()
+	defer wb.mu.RUnlock()
+	return len(wb.models)
 }

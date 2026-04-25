@@ -1,11 +1,51 @@
-database_url: "<user>:<password>@tcp(<host>:<port>)/<database>?charset=utf8mb4&parseTime=True&loc=Local"
+﻿service:
+  port: 8080
+  log_level: info
 
-model_groups:
-  - name: deepseek-v3
-    strategy: round-robin
-    cost_per_input_token: 0.000001
-    cost_per_output_token: 0.000001
-    models:
-      - name: DeepSeek-V3-int8
-        type: openai
-        base_url: xx
+models:
+  model_groups:
+    - name: deepseek-v3
+      strategy: round-robin
+      cost_per_input_token: 0.000001
+      cost_per_output_token: 0.000001
+      # Request defaults will be merged when caller does not provide these fields.
+      request_defaults:
+        temperature: 0.7
+        max_tokens: 4096
+        stream: false
+      models:
+        - name: DeepSeek-V3-int8
+          type: openai
+          base_url: https://example-openai-compatible.com
+          # Keep real keys in Secret/Config Center, not in config file.
+          api_key: "<PROVIDER_API_KEY_FROM_SECRET>"
+          timeout_seconds: 60
+          retry_times: 1
+          # Only use true for internal/self-signed upstream certificates.
+          skip_tls_verify: false
+
+    - name: claude-3-sonnet
+      strategy: weighted
+      cost_per_input_token: 0.000003
+      cost_per_output_token: 0.000015
+      request_defaults:
+        max_tokens: 4096
+      models:
+        - name: claude-3-7-sonnet-20250219
+          type: anthropic
+          base_url: https://api.anthropic.com
+          api_key: "<PROVIDER_API_KEY_FROM_SECRET>"
+          weight: 100
+          timeout_seconds: 60
+          retry_times: 1
+          skip_tls_verify: false
+
+secrets:
+  # Local/dev can put plain DSN here for testing.
+  database_url: "postgres://<DB_USER>:<DB_PASSWORD>@<DB_HOST>:<DB_PORT>/<DB_NAME>?sslmode=disable"
+  # Production should inject JANUS_DATABASE_URL via k8s Secret or config center.
+
+admin:
+  # Startup seeds/updates database admin user "admin" with this password.
+  master_key: "<ADMIN_MASTER_KEY_FROM_SECRET>"
+  # Production should inject JANUS_ADMIN_MASTER_KEY via k8s Secret or config center.

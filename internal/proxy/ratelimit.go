@@ -8,44 +8,64 @@ import (
 type RequestRing struct {
 	window      time.Duration
 	maxRequests int
-	bufferSize  int
-	ring        []time.Time
-	writePos    int
-	mu          sync.RWMutex
+	requests    []time.Time
+	unlimited   bool
+	mu          sync.Mutex
 }
 
 func NewRequestRing(window time.Duration, maxRequests int) *RequestRing {
+	if maxRequests <= 0 {
+		return &RequestRing{
+			window:      window,
+			maxRequests: 0,
+			unlimited:   true,
+		}
+	}
+
 	return &RequestRing{
 		window:      window,
 		maxRequests: maxRequests,
-		bufferSize:  maxRequests + 10, // 多预留一点防止边界问题
-		ring:        make([]time.Time, maxRequests+10),
+		requests:    make([]time.Time, 0, maxRequests),
 	}
 }
 
 func (r *RequestRing) Allow() bool {
+	allowed, _ := r.AllowAt(time.Now())
+	return allowed
+}
+
+func (r *RequestRing) AllowAt(now time.Time) (bool, time.Duration) {
+	if r.unlimited {
+		return true, 0
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.maxRequests == 0 {
-		return true
-	}
-
-	now := time.Now()
-	cutoff := now.Add(-r.window)
-
-	count := 0
-	for i := 0; i < r.bufferSize; i++ {
-		if r.ring[i].After(cutoff) {
-			count++
+	r.pruneLocked(now)
+	if len(r.requests) >= r.maxRequests {
+		retryAfter := r.requests[0].Add(r.window).Sub(now)
+		if retryAfter < 0 {
+			retryAfter = 0
 		}
+		return false, retryAfter
 	}
 
-	if count >= r.maxRequests {
-		return false
-	}
+	r.requests = append(r.requests, now)
+	return true, 0
+}
 
-	r.ring[r.writePos] = now
-	r.writePos = (r.writePos + 1) % r.bufferSize
-	return true
+func (r *RequestRing) pruneLocked(now time.Time) {
+	cutoff := now.Add(-r.window)
+	firstValid := 0
+	for firstValid < len(r.requests) {
+		if r.requests[firstValid].After(cutoff) {
+			break
+		}
+		firstValid++
+	}
+	if firstValid == 0 {
+		return
+	}
+	r.requests = append(r.requests[:0], r.requests[firstValid:]...)
 }

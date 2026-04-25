@@ -3,25 +3,30 @@ package janusDb
 import (
 	"log"
 
-	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
 var (
-	MysqlDsn string
+	DatabaseDsn string
 )
 
 func ConnectDatabase() (*gorm.DB, error) {
-	log.Println("Connecting to database with DSN:", MysqlDsn)
-	db, err := gorm.Open(mysql.Open(MysqlDsn), &gorm.Config{})
+	db, err := gorm.Open(postgres.Open(DatabaseDsn), &gorm.Config{})
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
+		log.Printf("ConnectDatabase: failed to connect: %v", err)
 		return nil, err
 	}
 	return db, nil
 }
 
 func CloseDatabaseConnection(db *gorm.DB) {
-	sqlDB, _ := db.DB()
-	sqlDB.Close()
+	if db == nil {
+		return
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return
+	}
+	_ = sqlDB.Close()
 }

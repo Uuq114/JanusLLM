@@ -19,8 +19,9 @@ var (
 type SpendRecord struct {
 	RecordId         int       `gorm:"primaryKey;column:record_id"`
 	RequestId        string    `gorm:"column:request_id"`
-	AuthKey          string    `gorm:"column:auth_key"`
-	UserId           int       `gorm:"column:user_id"`
+	KeyId            int       `gorm:"column:key_id"`
+	KeyContent       string    `gorm:"column:key_content"`
+	TeamId           int       `gorm:"column:team_id"`
 	OrganizationId   int       `gorm:"column:organization_id"`
 	ModelGroup       string    `gorm:"column:model_group"`
 	Spend            float64   `gorm:"column:spend"`
@@ -44,29 +45,47 @@ type UpstreamResp struct {
 	Usage      TokenUsage `json:"usage"`
 }
 
-// spend log
-
 func CreateSpendRecord(c *gin.Context, ch chan<- SpendRecord) {
-	var upstreamResp UpstreamResp
-	if err := json.Unmarshal(c.MustGet("upstreamResp").([]byte), &upstreamResp); err != nil {
-		log.Fatal("Failed to decode upstream response:", err)
+	if ch == nil {
 		return
 	}
+	resp, exists := c.Get("upstreamResp")
+	if !exists {
+		return
+	}
+
+	respBytes, ok := resp.([]byte)
+	if !ok {
+		log.Printf("CreateSpendRecord: upstreamResp type mismatch: %T", resp)
+		return
+	}
+
+	var upstreamResp UpstreamResp
+	if err := json.Unmarshal(respBytes, &upstreamResp); err != nil {
+		log.Printf("CreateSpendRecord: failed to decode upstream response: %v", err)
+		return
+	}
+
 	key := c.MustGet("key").(auth.Key)
 	model := c.MustGet("modelGroup").(string)
-	spend := ModelPrice[model][0]*float64(upstreamResp.Usage.PromptTokens) +
-		ModelPrice[model][1]*float64(upstreamResp.Usage.CompletionTokens)
+	price, ok := ModelPrice[model]
+	if !ok || len(price) < 2 {
+		log.Printf("CreateSpendRecord: missing model price config for model group: %s", model)
+		return
+	}
+
+	spend := price[0]*float64(upstreamResp.Usage.PromptTokens) + price[1]*float64(upstreamResp.Usage.CompletionTokens)
 	record := SpendRecord{
 		RequestId:        upstreamResp.Id,
-		AuthKey:          key.KeyContent,
-		UserId:           key.UserId,
+		KeyId:            key.KeyId,
+		KeyContent:       auth.RedactKeyContent(key.KeyContent),
+		TeamId:           key.TeamId,
 		OrganizationId:   key.OrganizationId,
 		ModelGroup:       model,
 		Spend:            spend,
 		TotalTokens:      upstreamResp.Usage.TotalTokens,
 		PromptTokens:     upstreamResp.Usage.PromptTokens,
 		CompletionTokens: upstreamResp.Usage.CompletionTokens,
-		CreateTime:       time.Now(),
 	}
 	c.Set("spend", spend)
 	ch <- record
@@ -75,58 +94,63 @@ func CreateSpendRecord(c *gin.Context, ch chan<- SpendRecord) {
 func InsertBatchSpendRecord(records []SpendRecord) {
 	db, err := janusDb.ConnectDatabase()
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
+		log.Printf("InsertBatchSpendRecord: connect database failed: %v", err)
 		return
 	}
 	defer janusDb.CloseDatabaseConnection(db)
 
-	if err := db.Table("janus_spend_log").Create(&records).Error; err != nil {
-		log.Fatal("Failed to insert batch spend records:", err)
+	if err := db.Table("janus_spend_log").Omit("create_time").Create(&records).Error; err != nil {
+		log.Printf("InsertBatchSpendRecord: insert failed: %v", err)
 	}
 }
 
 func GetRangeSpendRecords(startTime time.Time, endTime time.Time) ([]SpendRecord, error) {
 	db, err := janusDb.ConnectDatabase()
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
+		log.Printf("GetRangeSpendRecords: connect database failed: %v", err)
 		return nil, err
 	}
 	defer janusDb.CloseDatabaseConnection(db)
 
 	var records []SpendRecord
 	if err := db.Table("janus_spend_log").Where("create_time BETWEEN ? AND ?", startTime, endTime).Find(&records).Error; err != nil {
-		log.Fatal("Failed to get spend records:", err)
+		log.Printf("GetRangeSpendRecords: query failed: %v", err)
 		return nil, err
 	}
 
 	return records, nil
 }
 
-// update key balance
-
 func CreateKeySpendRecord(c *gin.Context, ch chan<- float64) {
-	spend := c.MustGet("spend").(float64)
 	if ch == nil {
-		ch = make(chan float64, 100)
+		return
 	}
-	ch <- spend
+	spendValue, exists := c.Get("spend")
+	if !exists {
+		return
+	}
+	spendAmount, ok := spendValue.(float64)
+	if !ok {
+		log.Printf("CreateKeySpendRecord: spend type mismatch: %T", spendValue)
+		return
+	}
+	ch <- spendAmount
 }
 
-func UpdateKeySpendRecord(totalSpend float64, key string) {
+func UpdateKeySpendRecord(totalSpend float64, keyID int) {
 	db, err := janusDb.ConnectDatabase()
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
+		log.Printf("UpdateKeySpendRecord: connect database failed: %v", err)
 		return
 	}
 	defer janusDb.CloseDatabaseConnection(db)
 
-	err = db.Table("janus_auth_key").
-		Where("key_content = ?", key).
+	if err := db.Table("janus_auth_key").
+		Where("key_id = ?", keyID).
 		Updates(map[string]interface{}{
 			"balance":     gorm.Expr("balance - ?", totalSpend),
 			"total_spend": gorm.Expr("total_spend + ?", totalSpend),
-		}).Error
-	if err != nil {
-		log.Fatal("Failed to update key balance and total_spend:", err)
+		}).Error; err != nil {
+		log.Printf("UpdateKeySpendRecord: update failed: %v", err)
 	}
 }
