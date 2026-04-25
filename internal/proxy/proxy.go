@@ -272,7 +272,7 @@ func (p *Proxy) forwardOnce(c *gin.Context, endpointPath string, modelGroup stri
 	if shouldStream(c, resp) {
 		copyResponseHeaders(c, resp.Header)
 		c.Status(resp.StatusCode)
-		streamUsage, streamErr := streamToClient(c, resp.Body)
+		streamUsage, streamErr := streamToClient(c, resp.Body, adapter)
 		if streamErr != nil {
 			return http.StatusBadGateway, false, streamErr
 		}
@@ -291,7 +291,9 @@ func (p *Proxy) forwardOnce(c *gin.Context, endpointPath string, modelGroup stri
 	c.Data(resp.StatusCode, contentType(resp.Header), respBody)
 
 	if isJSONResponse(resp.Header) {
-		c.Set("upstreamResp", respBody)
+		if spendPayload, payloadErr := adapter.BuildSpendPayload(respBody); payloadErr == nil && len(spendPayload) > 0 {
+			c.Set("upstreamResp", spendPayload)
+		}
 	}
 
 	logger.Info("upstream request succeeded",
@@ -393,7 +395,7 @@ func upstreamModelKey(model *models.ModelConfig) string {
 	return model.Name + "\x00" + model.BaseURL
 }
 
-func streamToClient(c *gin.Context, body io.Reader) ([]byte, error) {
+func streamToClient(c *gin.Context, body io.Reader, adapter ProviderAdapter) ([]byte, error) {
 	flusher, _ := c.Writer.(http.Flusher)
 	reader := bufio.NewReader(body)
 	var requestID string
@@ -408,7 +410,9 @@ func streamToClient(c *gin.Context, body io.Reader) ([]byte, error) {
 			if flusher != nil {
 				flusher.Flush()
 			}
-			parseSSEUsageLine(line, &requestID, &usage)
+			if adapter != nil {
+				adapter.ParseSpendStreamLine(line, &requestID, &usage)
+			}
 		}
 		if err == io.EOF {
 			break
@@ -430,34 +434,6 @@ func streamToClient(c *gin.Context, body io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	return payload, nil
-}
-
-func parseSSEUsageLine(line []byte, requestID *string, usage **spend.TokenUsage) {
-	trimmed := strings.TrimSpace(string(line))
-	if trimmed == "" || !strings.HasPrefix(trimmed, "data:") {
-		return
-	}
-
-	data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-	if data == "" || data == "[DONE]" {
-		return
-	}
-
-	var chunk struct {
-		ID    string            `json:"id"`
-		Usage *spend.TokenUsage `json:"usage"`
-	}
-	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-		return
-	}
-
-	if chunk.ID != "" {
-		*requestID = chunk.ID
-	}
-	if chunk.Usage != nil {
-		copied := *chunk.Usage
-		*usage = &copied
-	}
 }
 
 func copyResponseHeaders(c *gin.Context, headers http.Header) {

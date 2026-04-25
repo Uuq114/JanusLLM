@@ -570,12 +570,24 @@ func createKey(c *gin.Context) {
 		return
 	}
 
+	db, ok := connectAdminDB(c)
+	if !ok {
+		return
+	}
+	defer janusDb.CloseDatabaseConnection(db)
+
+	resolvedOrgID, err := validateTeamOrganization(db, req.TeamID, req.OrganizationID)
+	if err != nil {
+		respondTeamOrganizationError(c, err)
+		return
+	}
+
 	key := keyDTO{
 		KeyContent:        keyContent,
 		KeyName:           strings.TrimSpace(req.KeyName),
 		ModelList:         normalizeModelList(req.ModelList, req.AllModels),
 		TeamID:            req.TeamID,
-		OrganizationID:    req.OrganizationID,
+		OrganizationID:    resolvedOrgID,
 		Balance:           req.Balance,
 		TotalSpend:        0,
 		RequestPerMinute:  req.RequestPerMinute,
@@ -586,12 +598,6 @@ func createKey(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "key_name is required"})
 		return
 	}
-
-	db, ok := connectAdminDB(c)
-	if !ok {
-		return
-	}
-	defer janusDb.CloseDatabaseConnection(db)
 
 	if err := db.Table("janus_auth_key").
 		Clauses(clause.Returning{}).
@@ -690,6 +696,24 @@ func updateKey(c *gin.Context) {
 	if len(updates) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
 		return
+	}
+
+	if req.TeamID != nil || req.OrganizationID != nil {
+		targetTeamID := existing.TeamID
+		if req.TeamID != nil {
+			targetTeamID = *req.TeamID
+		}
+		targetOrgID := existing.OrganizationID
+		if req.OrganizationID != nil {
+			targetOrgID = *req.OrganizationID
+		}
+
+		resolvedOrgID, err := validateTeamOrganization(db, targetTeamID, targetOrgID)
+		if err != nil {
+			respondTeamOrganizationError(c, err)
+			return
+		}
+		updates["organization_id"] = resolvedOrgID
 	}
 
 	result := db.Table("janus_auth_key").Where("key_id = ?", id).Updates(updates)
@@ -808,4 +832,39 @@ func isConstraintError(err error) bool {
 		strings.Contains(msg, "violates foreign key") ||
 		strings.Contains(msg, "violates unique constraint") ||
 		strings.Contains(msg, "constraint")
+}
+
+var errTeamOrganizationMismatch = errors.New("team_id and organization_id do not match")
+
+func validateTeamOrganization(db *gorm.DB, teamID int64, organizationID int64) (int64, error) {
+	if db == nil {
+		return 0, errors.New("database unavailable")
+	}
+	if teamID <= 0 {
+		return 0, errors.New("team_id is required")
+	}
+
+	var team teamDTO
+	err := db.Table("janus_auth_team").
+		Select("team_id", "organization_id").
+		Where("team_id = ?", teamID).
+		First(&team).Error
+	if err != nil {
+		return 0, err
+	}
+	if organizationID > 0 && organizationID != team.OrganizationID {
+		return 0, errTeamOrganizationMismatch
+	}
+	return team.OrganizationID, nil
+}
+
+func respondTeamOrganizationError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		c.JSON(http.StatusBadRequest, gin.H{"error": "team_id not found"})
+	case errors.Is(err, errTeamOrganizationMismatch):
+		c.JSON(http.StatusBadRequest, gin.H{"error": "team_id and organization_id do not match"})
+	default:
+		respondDBError(c, "validate team organization failed", err)
+	}
 }
