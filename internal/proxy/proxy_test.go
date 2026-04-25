@@ -3,10 +3,12 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/Uuq114/JanusLLM/internal/balancer"
 	"github.com/Uuq114/JanusLLM/internal/models"
+	"github.com/Uuq114/JanusLLM/internal/spend"
 )
 
 type sequenceBalancer struct {
@@ -198,6 +201,121 @@ func TestHandleRequestRetriesDistinctWeightedBackup(t *testing.T) {
 	}
 }
 
+func TestHandleRequestRecordsSpendForJSONWithoutContentType(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var upstreamHits int32
+	respBody := []byte(`{"id":"chatcmpl-123","usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}`)
+	upstreamURL, closeUpstream := startRawJSONServer(t, &upstreamHits, http.StatusOK, respBody)
+	defer closeUpstream()
+
+	groupName := "json-group"
+	p := &Proxy{
+		balancers: map[string]balancer.Balancer{
+			groupName: &sequenceBalancer{
+				models: []*models.ModelConfig{
+					{Name: "json-model", BaseURL: upstreamURL},
+				},
+			},
+		},
+		groups: map[string]models.ModelGroup{
+			groupName: {Name: groupName},
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"json-group","messages":[{"role":"user","content":"hi"}]}`)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("modelGroup", groupName)
+	ctx.Set("rawBody", body)
+	ctx.Set("logger", zap.NewNop())
+	ctx.Set("isStreamRequest", false)
+
+	p.HandleRequest(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected upstream response to succeed, got status %d body %q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("expected default response content type application/json, got %q", got)
+	}
+	if got := atomic.LoadInt32(&upstreamHits); got != 1 {
+		t.Fatalf("expected upstream to be called once, got %d", got)
+	}
+
+	spendValue, exists := ctx.Get("upstreamResp")
+	if !exists {
+		t.Fatal("expected upstreamResp to be recorded for JSON body without content type")
+	}
+	spendPayload, ok := spendValue.([]byte)
+	if !ok {
+		t.Fatalf("expected upstreamResp to be []byte, got %T", spendValue)
+	}
+
+	var upstreamResp spend.UpstreamResp
+	if err := json.Unmarshal(spendPayload, &upstreamResp); err != nil {
+		t.Fatalf("failed to decode upstreamResp: %v", err)
+	}
+	if upstreamResp.Id != "chatcmpl-123" {
+		t.Fatalf("expected request id to be preserved, got %q", upstreamResp.Id)
+	}
+	if upstreamResp.Usage.PromptTokens != 3 || upstreamResp.Usage.CompletionTokens != 4 || upstreamResp.Usage.TotalTokens != 7 {
+		t.Fatalf("unexpected usage recorded: %+v", upstreamResp.Usage)
+	}
+}
+
+func TestHandleRequestHonorsRetryTimesForSameUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var hits int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit := atomic.AddInt32(&hits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		if hit == 1 {
+			http.Error(w, "temporary failure", http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"ok"}`)
+	}))
+	defer upstream.Close()
+
+	groupName := "retry-group"
+	p := &Proxy{
+		balancers: map[string]balancer.Balancer{
+			groupName: &sequenceBalancer{
+				models: []*models.ModelConfig{
+					{Name: "retry-model", BaseURL: upstream.URL, RetryTimes: 1},
+				},
+			},
+		},
+		groups: map[string]models.ModelGroup{
+			groupName: {Name: groupName},
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"retry-group","messages":[{"role":"user","content":"hi"}]}`)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("modelGroup", groupName)
+	ctx.Set("rawBody", body)
+	ctx.Set("logger", zap.NewNop())
+	ctx.Set("isStreamRequest", false)
+
+	p.HandleRequest(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected retry to succeed, got status %d body %q", rec.Code, rec.Body.String())
+	}
+	if got := atomic.LoadInt32(&hits); got != 2 {
+		t.Fatalf("expected one original request and one retry, got %d calls", got)
+	}
+}
+
 func startBrokenStreamServer(t *testing.T, hits *int32) (string, func()) {
 	t.Helper()
 
@@ -234,6 +352,53 @@ func startBrokenStreamServer(t *testing.T, hits *int32) (string, func()) {
 				_, _ = io.WriteString(conn, "Content-Length: 100\r\n")
 				_, _ = io.WriteString(conn, "\r\n")
 				_, _ = io.WriteString(conn, "data: first\n")
+			}(conn)
+		}
+	}()
+
+	closeFn := func() {
+		_ = listener.Close()
+		<-done
+	}
+
+	return "http://" + listener.Addr().String(), closeFn
+}
+
+func startRawJSONServer(t *testing.T, hits *int32, status int, body []byte) (string, func()) {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				atomic.AddInt32(hits, 1)
+
+				reader := bufio.NewReader(conn)
+				for {
+					line, err := reader.ReadString('\n')
+					if err != nil {
+						return
+					}
+					if line == "\r\n" {
+						break
+					}
+				}
+
+				_, _ = io.WriteString(conn, "HTTP/1.1 "+strconv.Itoa(status)+" "+http.StatusText(status)+"\r\n")
+				_, _ = io.WriteString(conn, "Content-Length: "+strconv.Itoa(len(body))+"\r\n")
+				_, _ = io.WriteString(conn, "\r\n")
+				_, _ = conn.Write(body)
 			}(conn)
 		}
 	}()

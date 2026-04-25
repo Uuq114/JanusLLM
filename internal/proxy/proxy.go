@@ -33,6 +33,8 @@ var (
 	keySpendQueue   = make(map[int]chan float64)
 )
 
+const maxPerUpstreamRetryTimes = 3
+
 type Proxy struct {
 	balancers map[string]balancer.Balancer
 	groups    map[string]models.ModelGroup
@@ -196,28 +198,49 @@ func (p *Proxy) HandleRequest(c *gin.Context) {
 	}
 	var lastErr error
 
-	for attempt, upstreamModel := range candidates {
-		status, shouldRetry, err := p.forwardOnce(c, endpointPath, modelGroup, upstreamModel, rawBody, logger)
-		if err == nil {
-			return
-		}
-
-		lastErr = err
-		if !shouldRetry {
-			logger.Warn("request failed without retry", zap.Error(err), zap.Int("status", status), zap.Int("attempt", attempt+1))
-			if c.Writer.Written() {
+	for candidateIndex, upstreamModel := range candidates {
+		maxAttempts := perUpstreamAttempts(upstreamModel)
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			status, shouldRetry, err := p.forwardOnce(c, endpointPath, modelGroup, upstreamModel, rawBody, logger)
+			if err == nil {
 				return
 			}
-			c.JSON(status, gin.H{"error": err.Error()})
-			return
-		}
 
-		logger.Warn("request failed and retrying another upstream",
-			zap.Error(err),
-			zap.Int("status", status),
-			zap.Int("attempt", attempt+1),
-			zap.String("upstream", upstreamModel.Name),
-		)
+			lastErr = err
+			if !shouldRetry {
+				logger.Warn("request failed without retry",
+					zap.Error(err),
+					zap.Int("status", status),
+					zap.Int("candidate", candidateIndex+1),
+					zap.Int("attempt", attempt),
+				)
+				if c.Writer.Written() {
+					return
+				}
+				c.JSON(status, gin.H{"error": err.Error()})
+				return
+			}
+
+			if attempt < maxAttempts {
+				logger.Warn("request failed and retrying same upstream",
+					zap.Error(err),
+					zap.Int("status", status),
+					zap.Int("candidate", candidateIndex+1),
+					zap.Int("attempt", attempt),
+					zap.Int("max_attempts", maxAttempts),
+					zap.String("upstream", upstreamModel.Name),
+				)
+				continue
+			}
+
+			logger.Warn("request failed and retrying another upstream",
+				zap.Error(err),
+				zap.Int("status", status),
+				zap.Int("candidate", candidateIndex+1),
+				zap.Int("attempt", attempt),
+				zap.String("upstream", upstreamModel.Name),
+			)
+		}
 	}
 
 	if lastErr != nil {
@@ -290,10 +313,8 @@ func (p *Proxy) forwardOnce(c *gin.Context, endpointPath string, modelGroup stri
 	copyResponseHeaders(c, resp.Header)
 	c.Data(resp.StatusCode, contentType(resp.Header), respBody)
 
-	if isJSONResponse(resp.Header) {
-		if spendPayload, payloadErr := adapter.BuildSpendPayload(respBody); payloadErr == nil && len(spendPayload) > 0 {
-			c.Set("upstreamResp", spendPayload)
-		}
+	if spendPayload, payloadErr := adapter.BuildSpendPayload(respBody); payloadErr == nil && len(spendPayload) > 0 {
+		c.Set("upstreamResp", spendPayload)
 	}
 
 	logger.Info("upstream request succeeded",
@@ -339,6 +360,16 @@ func buildHTTPClient(upstreamModel *models.ModelConfig, streamRequest bool, time
 		client.Timeout = timeout
 	}
 	return client
+}
+
+func perUpstreamAttempts(upstreamModel *models.ModelConfig) int {
+	if upstreamModel == nil || upstreamModel.RetryTimes <= 0 {
+		return 1
+	}
+	if upstreamModel.RetryTimes > maxPerUpstreamRetryTimes {
+		return maxPerUpstreamRetryTimes + 1
+	}
+	return upstreamModel.RetryTimes + 1
 }
 
 func distinctRetryCandidates(blcr balancer.Balancer) []*models.ModelConfig {
