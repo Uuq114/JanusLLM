@@ -270,7 +270,7 @@ func checkKeyMiddleware(logger *zap.Logger) gin.HandlerFunc {
 
 		result, err := getValidKeyForRequest(keyContent, time.Now())
 		if err != nil {
-			logger.Error("Failed to validate key from database", zap.String("key", keyContent), zap.Error(err))
+			logger.Error("Failed to validate key from database", zap.String("key", auth.RedactKeyContent(keyContent)), zap.Error(err))
 			respondAPIError(c, http.StatusServiceUnavailable, "authorization_check_unavailable", "authorization check unavailable")
 			c.Abort()
 			return
@@ -458,7 +458,7 @@ func logSpendMiddleware(logger *zap.Logger) gin.HandlerFunc {
 
 		spend.CreateSpendRecord(c, proxy.SpendLogQueue)
 		keyInfo := key.(auth.Key)
-		keySpendQueue := proxy.GetOrCreateKeySpendQueue(keyInfo.KeyContent)
+		keySpendQueue := proxy.GetOrCreateKeySpendQueue(keyInfo.KeyId)
 		spend.CreateKeySpendRecord(c, keySpendQueue)
 
 		if start, ok := c.Get("requestStart"); ok {
@@ -544,7 +544,7 @@ func refreshCachedKeys(logger *zap.Logger) {
 		if !keyInfo.LastAccessAt.IsZero() && now.Sub(keyInfo.LastAccessAt) > keyCacheIdleTTL {
 			deleteCachedKey(keyContent)
 			proxy.RemoveRequestRing(keyContent)
-			logger.Info("Evicted idle key cache entry", zap.String("key", keyContent))
+			logger.Info("Evicted idle key cache entry", zap.String("key", auth.RedactKeyContent(keyContent)))
 			continue
 		}
 
@@ -554,13 +554,13 @@ func refreshCachedKeys(logger *zap.Logger) {
 
 		latest, err := auth.GetValidKeyByContent(keyContent)
 		if err != nil {
-			logger.Warn("Failed to refresh key cache entry", zap.String("key", keyContent), zap.Error(err))
+			logger.Warn("Failed to refresh key cache entry", zap.String("key", auth.RedactKeyContent(keyContent)), zap.Error(err))
 			continue
 		}
 		if latest == nil {
 			deleteCachedKey(keyContent)
 			proxy.RemoveRequestRing(keyContent)
-			logger.Info("Removed invalid key cache entry", zap.String("key", keyContent))
+			logger.Info("Removed invalid key cache entry", zap.String("key", auth.RedactKeyContent(keyContent)))
 			continue
 		}
 
@@ -591,17 +591,17 @@ func FlushSpendLog(logger *zap.Logger, ch <-chan spend.SpendRecord) {
 	}
 }
 
-func FlushKeySpend(logger *zap.Logger, queue map[string]chan float64) {
-	for key, ch := range queue {
+func FlushKeySpend(logger *zap.Logger, queue map[int]chan float64) {
+	for keyID, ch := range queue {
 		totalSpend := 0.0
 		for {
 			select {
 			case spd, ok := <-ch:
 				if !ok {
 					if totalSpend > 0 {
-						spend.UpdateKeySpendRecord(totalSpend, key)
+						spend.UpdateKeySpendRecord(totalSpend, keyID)
 						logger.Info("Flushed key spend records to database",
-							zap.String("key", key),
+							zap.Int("key_id", keyID),
 							zap.Float64("total spend", totalSpend),
 						)
 					}
@@ -610,9 +610,9 @@ func FlushKeySpend(logger *zap.Logger, queue map[string]chan float64) {
 				totalSpend += spd
 			default:
 				if totalSpend > 0 {
-					spend.UpdateKeySpendRecord(totalSpend, key)
+					spend.UpdateKeySpendRecord(totalSpend, keyID)
 					logger.Info("Flushed key spend records to database",
-						zap.String("key", key),
+						zap.Int("key_id", keyID),
 						zap.Float64("total spend", totalSpend),
 					)
 				}

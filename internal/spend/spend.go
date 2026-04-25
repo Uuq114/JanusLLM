@@ -19,7 +19,8 @@ var (
 type SpendRecord struct {
 	RecordId         int       `gorm:"primaryKey;column:record_id"`
 	RequestId        string    `gorm:"column:request_id"`
-	AuthKey          string    `gorm:"column:auth_key"`
+	KeyId            int       `gorm:"column:key_id"`
+	KeyContent       string    `gorm:"column:key_content"`
 	TeamId           int       `gorm:"column:team_id"`
 	OrganizationId   int       `gorm:"column:organization_id"`
 	ModelGroup       string    `gorm:"column:model_group"`
@@ -76,7 +77,8 @@ func CreateSpendRecord(c *gin.Context, ch chan<- SpendRecord) {
 	spend := price[0]*float64(upstreamResp.Usage.PromptTokens) + price[1]*float64(upstreamResp.Usage.CompletionTokens)
 	record := SpendRecord{
 		RequestId:        upstreamResp.Id,
-		AuthKey:          key.KeyContent,
+		KeyId:            key.KeyId,
+		KeyContent:       auth.RedactKeyContent(key.KeyContent),
 		TeamId:           key.TeamId,
 		OrganizationId:   key.OrganizationId,
 		ModelGroup:       model,
@@ -135,7 +137,7 @@ func CreateKeySpendRecord(c *gin.Context, ch chan<- float64) {
 	ch <- spendAmount
 }
 
-func UpdateKeySpendRecord(totalSpend float64, key string) {
+func UpdateKeySpendRecord(totalSpend float64, keyID int) {
 	db, err := janusDb.ConnectDatabase()
 	if err != nil {
 		log.Printf("UpdateKeySpendRecord: connect database failed: %v", err)
@@ -144,7 +146,7 @@ func UpdateKeySpendRecord(totalSpend float64, key string) {
 	defer janusDb.CloseDatabaseConnection(db)
 
 	if err := db.Table("janus_auth_key").
-		Where("key_content = ?", key).
+		Where("key_id = ?", keyID).
 		Updates(map[string]interface{}{
 			"balance":     gorm.Expr("balance - ?", totalSpend),
 			"total_spend": gorm.Expr("total_spend + ?", totalSpend),

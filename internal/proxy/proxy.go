@@ -30,7 +30,7 @@ var (
 	keyRequestRing   = make(map[string]*RequestRing)
 
 	keySpendQueueMu sync.RWMutex
-	keySpendQueue   = make(map[string]chan float64)
+	keySpendQueue   = make(map[int]chan float64)
 )
 
 type Proxy struct {
@@ -144,9 +144,9 @@ func RemoveRequestRing(key string) {
 	delete(keyRequestRing, key)
 }
 
-func GetOrCreateKeySpendQueue(key string) chan float64 {
+func GetOrCreateKeySpendQueue(keyID int) chan float64 {
 	keySpendQueueMu.RLock()
-	ch, ok := keySpendQueue[key]
+	ch, ok := keySpendQueue[keyID]
 	keySpendQueueMu.RUnlock()
 	if ok {
 		return ch
@@ -154,19 +154,19 @@ func GetOrCreateKeySpendQueue(key string) chan float64 {
 
 	keySpendQueueMu.Lock()
 	defer keySpendQueueMu.Unlock()
-	if existing, exists := keySpendQueue[key]; exists {
+	if existing, exists := keySpendQueue[keyID]; exists {
 		return existing
 	}
 	created := make(chan float64, 100)
-	keySpendQueue[key] = created
+	keySpendQueue[keyID] = created
 	return created
 }
 
-func SnapshotKeySpendQueue() map[string]chan float64 {
+func SnapshotKeySpendQueue() map[int]chan float64 {
 	keySpendQueueMu.RLock()
 	defer keySpendQueueMu.RUnlock()
 
-	out := make(map[string]chan float64, len(keySpendQueue))
+	out := make(map[int]chan float64, len(keySpendQueue))
 	for k, v := range keySpendQueue {
 		out[k] = v
 	}

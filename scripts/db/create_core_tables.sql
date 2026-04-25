@@ -107,7 +107,8 @@ CREATE INDEX IF NOT EXISTS idx_model_endpoint_group_enabled
 CREATE TABLE IF NOT EXISTS janus_spend_log (
   record_id BIGSERIAL PRIMARY KEY,
   request_id TEXT NOT NULL,
-  auth_key TEXT NOT NULL,
+  key_id BIGINT NOT NULL REFERENCES janus_auth_key(key_id) ON DELETE RESTRICT,
+  key_content TEXT NOT NULL,
   team_id BIGINT NOT NULL REFERENCES janus_auth_team(team_id) ON DELETE RESTRICT,
   organization_id BIGINT NOT NULL REFERENCES janus_auth_organization(organization_id) ON DELETE RESTRICT,
   model_group TEXT NOT NULL,
@@ -119,19 +120,20 @@ CREATE TABLE IF NOT EXISTS janus_spend_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_spend_log_create_time ON janus_spend_log (create_time);
-CREATE INDEX IF NOT EXISTS idx_spend_log_auth_key ON janus_spend_log (auth_key);
+CREATE INDEX IF NOT EXISTS idx_spend_log_key_id ON janus_spend_log (key_id);
 CREATE INDEX IF NOT EXISTS idx_spend_log_team_time ON janus_spend_log (team_id, create_time);
 CREATE INDEX IF NOT EXISTS idx_spend_log_org_time ON janus_spend_log (organization_id, create_time);
 
 -- Optional summary table for faster dashboard query.
 CREATE TABLE IF NOT EXISTS janus_key_spend_daily (
   summary_date DATE NOT NULL,
-  auth_key TEXT NOT NULL,
+  key_id BIGINT NOT NULL REFERENCES janus_auth_key(key_id) ON DELETE RESTRICT,
+  key_content TEXT NOT NULL,
   organization_id BIGINT NOT NULL REFERENCES janus_auth_organization(organization_id) ON DELETE RESTRICT,
   total_spend NUMERIC(20, 8) NOT NULL DEFAULT 0,
   total_tokens BIGINT NOT NULL DEFAULT 0,
   request_count BIGINT NOT NULL DEFAULT 0,
-  PRIMARY KEY (summary_date, auth_key)
+  PRIMARY KEY (summary_date, key_id)
 );
 
 -- ------------------------

@@ -420,7 +420,8 @@ func updateTeam(c *gin.Context) {
 		updates["model_list"] = normalizeModelList(*req.ModelList, false)
 	}
 	if req.OrganizationID != nil {
-		updates["organization_id"] = *req.OrganizationID
+		c.JSON(http.StatusBadRequest, gin.H{"error": "team organization_id cannot be updated"})
+		return
 	}
 	if len(updates) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
@@ -651,12 +652,8 @@ func updateKey(c *gin.Context) {
 
 	updates := map[string]interface{}{}
 	if req.KeyContent != nil {
-		keyContent := strings.TrimSpace(*req.KeyContent)
-		if keyContent == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "key_content cannot be empty"})
-			return
-		}
-		updates["key_content"] = keyContent
+		c.JSON(http.StatusBadRequest, gin.H{"error": "key_content cannot be updated"})
+		return
 	}
 	if req.KeyName != nil {
 		keyName := strings.TrimSpace(*req.KeyName)
@@ -672,14 +669,12 @@ func updateKey(c *gin.Context) {
 		updates["model_list"] = normalizeModelList(*req.ModelList, false)
 	}
 	if req.TeamID != nil {
-		if *req.TeamID <= 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "team_id must be a positive integer"})
-			return
-		}
-		updates["team_id"] = *req.TeamID
+		c.JSON(http.StatusBadRequest, gin.H{"error": "key team_id cannot be updated"})
+		return
 	}
 	if req.OrganizationID != nil {
-		updates["organization_id"] = *req.OrganizationID
+		c.JSON(http.StatusBadRequest, gin.H{"error": "key organization_id cannot be updated"})
+		return
 	}
 	if req.Balance != nil {
 		updates["balance"] = *req.Balance
@@ -698,33 +693,12 @@ func updateKey(c *gin.Context) {
 		return
 	}
 
-	if req.TeamID != nil || req.OrganizationID != nil {
-		targetTeamID := existing.TeamID
-		if req.TeamID != nil {
-			targetTeamID = *req.TeamID
-		}
-		targetOrgID := existing.OrganizationID
-		if req.OrganizationID != nil {
-			targetOrgID = *req.OrganizationID
-		}
-
-		resolvedOrgID, err := validateTeamOrganization(db, targetTeamID, targetOrgID)
-		if err != nil {
-			respondTeamOrganizationError(c, err)
-			return
-		}
-		updates["organization_id"] = resolvedOrgID
-	}
-
 	result := db.Table("janus_auth_key").Where("key_id = ?", id).Updates(updates)
 	if result.Error != nil {
 		respondDBError(c, "update key failed", result.Error)
 		return
 	}
 	invalidateKeyCache(existing.KeyContent)
-	if updatedContent, ok := updates["key_content"].(string); ok {
-		invalidateKeyCache(updatedContent)
-	}
 	getKey(c)
 }
 

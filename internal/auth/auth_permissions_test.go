@@ -49,3 +49,25 @@ func TestEffectiveModelList(t *testing.T) {
 		})
 	}
 }
+
+func TestRedactKeyContent(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		want string
+	}{
+		{name: "empty", key: "", want: ""},
+		{name: "short", key: "sk-short", want: "***"},
+		{name: "overlap", key: "sk-abcd1234", want: "***"},
+		{name: "normal", key: "sk-abcdef123456", want: "sk-abcd...3456"},
+		{name: "trim spaces", key: "  sk-abcdef123456  ", want: "sk-abcd...3456"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RedactKeyContent(tt.key); got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}

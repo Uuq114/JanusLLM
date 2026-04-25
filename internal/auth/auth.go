@@ -124,6 +124,19 @@ func isWildcardModelList(modelList StringSlice) bool {
 	return len(modelList) == 1 && modelList[0] == "*"
 }
 
+func RedactKeyContent(keyContent string) string {
+	keyContent = strings.TrimSpace(keyContent)
+	if keyContent == "" {
+		return ""
+	}
+	const prefixLength = 7
+	const suffixLength = 4
+	if len(keyContent) <= prefixLength+suffixLength {
+		return "***"
+	}
+	return keyContent[:prefixLength] + "..." + keyContent[len(keyContent)-suffixLength:]
+}
+
 func CreateKeyRecord(keyContent string, keyName string, modelList []string, teamName string, organizationName string,
 	balance float64, requestPerMinute int, spendLimitPerWeek float64) {
 	db, err := janusDb.ConnectDatabase()

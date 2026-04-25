@@ -146,6 +146,14 @@ func handleOpenAPISpec(c *gin.Context) {
 						"organization_id": gin.H{"type": "integer", "example": 1},
 					},
 				},
+				"TeamPatchRequest": gin.H{
+					"type": "object",
+					"properties": gin.H{
+						"team_name":  gin.H{"type": "string", "example": "platform-team"},
+						"all_models": gin.H{"type": "boolean", "description": "When true, grants all models to the team and stores model_list as [\"*\"].", "example": true},
+						"model_list": gin.H{"type": "array", "items": gin.H{"type": "string"}, "description": "Use [\"*\"] or all_models=true to grant all models.", "example": []string{"*"}},
+					},
+				},
 				"Key": gin.H{
 					"type": "object",
 					"properties": gin.H{
@@ -172,6 +180,18 @@ func handleOpenAPISpec(c *gin.Context) {
 						"model_list":           gin.H{"type": "array", "items": gin.H{"type": "string"}, "description": "Use [\"*\"] or all_models=true to grant all models.", "example": []string{"*"}},
 						"team_id":              gin.H{"type": "integer", "example": 1},
 						"organization_id":      gin.H{"type": "integer", "example": 1},
+						"balance":              gin.H{"type": "number", "example": 100},
+						"request_per_minute":   gin.H{"type": "integer", "example": 60},
+						"spend_limit_per_week": gin.H{"type": "number", "example": 0},
+						"expire_time":          gin.H{"type": "string", "format": "date-time"},
+					},
+				},
+				"KeyPatchRequest": gin.H{
+					"type": "object",
+					"properties": gin.H{
+						"key_name":             gin.H{"type": "string", "example": "demo-key"},
+						"all_models":           gin.H{"type": "boolean", "description": "When true, grants all models and stores model_list as [\"*\"].", "example": true},
+						"model_list":           gin.H{"type": "array", "items": gin.H{"type": "string"}, "description": "Use [\"*\"] or all_models=true to grant all models.", "example": []string{"*"}},
 						"balance":              gin.H{"type": "number", "example": 100},
 						"request_per_minute":   gin.H{"type": "integer", "example": 60},
 						"spend_limit_per_week": gin.H{"type": "number", "example": 0},
@@ -224,9 +244,9 @@ func handleOpenAPISpec(c *gin.Context) {
 			"/v1/admin/organizations":                   adminCollectionPath("Admin Organizations", "Organizations", "#/components/schemas/Organization", "#/components/schemas/OrganizationRequest"),
 			"/v1/admin/organizations/{organization_id}": adminItemPath("Admin Organizations", "Organization", "organization_id", "#/components/schemas/Organization", "#/components/schemas/OrganizationRequest"),
 			"/v1/admin/teams":                           adminCollectionPath("Admin Teams", "Teams", "#/components/schemas/Team", "#/components/schemas/TeamRequest"),
-			"/v1/admin/teams/{team_id}":                 adminItemPath("Admin Teams", "Team", "team_id", "#/components/schemas/Team", "#/components/schemas/TeamRequest"),
+			"/v1/admin/teams/{team_id}":                 adminItemPath("Admin Teams", "Team", "team_id", "#/components/schemas/Team", "#/components/schemas/TeamPatchRequest"),
 			"/v1/admin/keys":                            adminCollectionPath("Admin Keys", "Keys", "#/components/schemas/Key", "#/components/schemas/KeyRequest"),
-			"/v1/admin/keys/{key_id}":                   adminItemPath("Admin Keys", "Key", "key_id", "#/components/schemas/Key", "#/components/schemas/KeyRequest"),
+			"/v1/admin/keys/{key_id}":                   adminItemPath("Admin Keys", "Key", "key_id", "#/components/schemas/Key", "#/components/schemas/KeyPatchRequest"),
 		},
 	})
 }
