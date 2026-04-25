@@ -189,15 +189,14 @@ func (p *Proxy) HandleRequest(c *gin.Context) {
 		return
 	}
 
-	attempts := max(1, blcr.Size())
+	candidates := distinctRetryCandidates(blcr)
+	if len(candidates) == 0 {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no available models"})
+		return
+	}
 	var lastErr error
 
-	for attempt := 0; attempt < attempts; attempt++ {
-		upstreamModel := blcr.Next()
-		if upstreamModel == nil {
-			continue
-		}
-
+	for attempt, upstreamModel := range candidates {
 		status, shouldRetry, err := p.forwardOnce(c, endpointPath, modelGroup, upstreamModel, rawBody, logger)
 		if err == nil {
 			return
@@ -254,12 +253,7 @@ func (p *Proxy) forwardOnce(c *gin.Context, endpointPath string, modelGroup stri
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 60
 	}
-	client := &http.Client{Timeout: time.Duration(timeoutSeconds) * time.Second}
-	if upstreamModel.SkipTLSVerify {
-		client.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
-	}
+	client := buildHTTPClient(upstreamModel, isStreamRequest(c), time.Duration(timeoutSeconds)*time.Second)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -313,12 +307,90 @@ func shouldStream(c *gin.Context, resp *http.Response) bool {
 	if !isSSEStreamResponse(resp.Header) {
 		return false
 	}
+	return isStreamRequest(c)
+}
+
+func isStreamRequest(c *gin.Context) bool {
 	if streamFlag, ok := c.Get("isStreamRequest"); ok {
 		if isStream, ok := streamFlag.(bool); ok {
 			return isStream
 		}
 	}
 	return false
+}
+
+func buildHTTPClient(upstreamModel *models.ModelConfig, streamRequest bool, timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if upstreamModel != nil && upstreamModel.SkipTLSVerify {
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{}
+		}
+		transport.TLSClientConfig.InsecureSkipVerify = true
+	}
+	if timeout > 0 {
+		transport.ResponseHeaderTimeout = timeout
+		transport.TLSHandshakeTimeout = timeout
+	}
+
+	client := &http.Client{Transport: transport}
+	if !streamRequest {
+		client.Timeout = timeout
+	}
+	return client
+}
+
+func distinctRetryCandidates(blcr balancer.Balancer) []*models.ModelConfig {
+	if blcr == nil {
+		return nil
+	}
+
+	all := blcr.Models()
+	if len(all) == 0 {
+		return nil
+	}
+
+	primary := blcr.Next()
+	if primary == nil {
+		return nil
+	}
+
+	out := make([]*models.ModelConfig, 0, len(all))
+	seen := make(map[string]struct{}, len(all))
+	appendIfNew := func(model *models.ModelConfig) {
+		if model == nil {
+			return
+		}
+		key := upstreamModelKey(model)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, model)
+	}
+
+	appendIfNew(primary)
+
+	start := 0
+	primaryKey := upstreamModelKey(primary)
+	for i, model := range all {
+		if upstreamModelKey(model) == primaryKey {
+			start = (i + 1) % len(all)
+			break
+		}
+	}
+
+	for offset := 0; offset < len(all); offset++ {
+		appendIfNew(all[(start+offset)%len(all)])
+	}
+
+	return out
+}
+
+func upstreamModelKey(model *models.ModelConfig) string {
+	if model == nil {
+		return ""
+	}
+	return model.Name + "\x00" + model.BaseURL
 }
 
 func streamToClient(c *gin.Context, body io.Reader) ([]byte, error) {

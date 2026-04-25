@@ -10,6 +10,7 @@ import (
 // Balancer chooses one upstream model endpoint for each request.
 type Balancer interface {
 	Next() *models.ModelConfig
+	Models() []*models.ModelConfig
 	AddModel(model *models.ModelConfig)
 	RemoveModel(modelName string)
 	Size() int
@@ -44,6 +45,15 @@ func (rb *RoundRobinBalancer) AddModel(model *models.ModelConfig) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	rb.models = append(rb.models, model)
+}
+
+func (rb *RoundRobinBalancer) Models() []*models.ModelConfig {
+	rb.mu.RLock()
+	defer rb.mu.RUnlock()
+
+	out := make([]*models.ModelConfig, len(rb.models))
+	copy(out, rb.models)
+	return out
 }
 
 func (rb *RoundRobinBalancer) RemoveModel(modelName string) {
@@ -110,6 +120,15 @@ func (wb *WeightedBalancer) AddModel(model *models.ModelConfig) {
 	wb.mu.Lock()
 	defer wb.mu.Unlock()
 	wb.models = append(wb.models, model)
+}
+
+func (wb *WeightedBalancer) Models() []*models.ModelConfig {
+	wb.mu.RLock()
+	defer wb.mu.RUnlock()
+
+	out := make([]*models.ModelConfig, len(wb.models))
+	copy(out, wb.models)
+	return out
 }
 
 func (wb *WeightedBalancer) RemoveModel(modelName string) {
