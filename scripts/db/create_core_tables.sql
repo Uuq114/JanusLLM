@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS janus_auth_key (
   organization_id BIGINT NOT NULL REFERENCES janus_auth_organization(organization_id) ON DELETE RESTRICT,
   balance NUMERIC(20, 8) NOT NULL DEFAULT 0,
   total_spend NUMERIC(20, 8) NOT NULL DEFAULT 0,
-  request_per_minute INTEGER NOT NULL DEFAULT 0,
+  request_per_minute INTEGER NOT NULL DEFAULT 0 CHECK (request_per_minute >= 0),
   spend_limit_per_week NUMERIC(20, 8) NOT NULL DEFAULT 0,
   create_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   update_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),

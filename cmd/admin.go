@@ -22,6 +22,8 @@ import (
 
 const adminMasterUser = "admin"
 
+const keyDeletionDisabledMessage = "key deletion is disabled until buffered spend updates can be drained safely"
+
 func syncMasterAdminUser(config AdminConfig, logger *zap.Logger) error {
 	masterKey := strings.TrimSpace(config.MasterKey)
 	if masterKey == "" {
@@ -570,6 +572,9 @@ func createKey(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "team_id is required"})
 		return
 	}
+	if !validateRequestPerMinute(c, req.RequestPerMinute) {
+		return
+	}
 
 	db, ok := connectAdminDB(c)
 	if !ok {
@@ -680,6 +685,9 @@ func updateKey(c *gin.Context) {
 		updates["balance"] = *req.Balance
 	}
 	if req.RequestPerMinute != nil {
+		if !validateRequestPerMinute(c, *req.RequestPerMinute) {
+			return
+		}
 		updates["request_per_minute"] = *req.RequestPerMinute
 	}
 	if req.SpendLimitPerWeek != nil {
@@ -718,13 +726,7 @@ func deleteKey(c *gin.Context) {
 	if !firstByID(c, db.Table("janus_auth_key").Where("key_id = ?", id), &existing) {
 		return
 	}
-	result := db.Table("janus_auth_key").Where("key_id = ?", id).Delete(&keyDTO{})
-	if result.Error != nil {
-		respondDBError(c, "delete key failed", result.Error)
-		return
-	}
-	invalidateKeyCache(existing.KeyContent)
-	c.Status(http.StatusNoContent)
+	c.JSON(http.StatusConflict, gin.H{"error": keyDeletionDisabledMessage})
 }
 
 func invalidateKeyCache(keyContent string) {
@@ -778,6 +780,14 @@ func parseIDParam(c *gin.Context, name string) (int64, bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+func validateRequestPerMinute(c *gin.Context, rpm int) bool {
+	if rpm < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "request_per_minute must be non-negative"})
+		return false
+	}
+	return true
 }
 
 func firstByID(c *gin.Context, query *gorm.DB, out interface{}) bool {

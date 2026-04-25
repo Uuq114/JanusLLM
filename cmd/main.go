@@ -419,6 +419,9 @@ func snapshotCachedKeys() map[string]cachedKey {
 }
 
 func isKeyLocallyValid(key auth.Key, now time.Time) bool {
+	if key.RequestPerMinute < 0 {
+		return false
+	}
 	if key.Balance <= 0 {
 		return false
 	}
@@ -499,6 +502,13 @@ func applyEffectiveModelPermissions(key auth.Key) auth.Key {
 }
 
 func invalidKeyResult(key auth.Key, now time.Time) (keyValidationResult, bool) {
+	if key.RequestPerMinute < 0 {
+		return keyValidationResult{
+			StatusCode:   http.StatusForbidden,
+			ErrorCode:    "invalid_rate_limit_config",
+			ErrorMessage: "authorization key rate limit config invalid",
+		}, true
+	}
 	if key.Balance <= 0 {
 		return keyValidationResult{
 			StatusCode:   http.StatusPaymentRequired,
