@@ -3,6 +3,11 @@
   log_level: info
 
 models:
+  # model_group.strategy supports:
+  #   round-robin: simple request rotation (default; also accepts round_robin/rr)
+  #   weighted: rotate by each upstream model weight
+  #   latency: prefer upstreams with lower observed successful latency, fallback to round-robin before history exists
+  #   client-sticky: hash stable client identity (API key/team/user headers/IP) to keep a client on the same upstream
   model_groups:
     - name: deepseek-v3
       strategy: round-robin

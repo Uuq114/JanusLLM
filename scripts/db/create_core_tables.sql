@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS janus_model_group (
   group_id BIGSERIAL PRIMARY KEY,
   group_name TEXT NOT NULL UNIQUE,
   strategy TEXT NOT NULL DEFAULT 'round-robin'
-    CHECK (strategy IN ('round-robin', 'weighted', 'least-inflight', 'latency-based')),
+    CHECK (strategy IN ('round-robin', 'weighted', 'least-inflight', 'latency-based', 'latency', 'client-sticky')),
   cost_per_input_token NUMERIC(20, 10) NOT NULL DEFAULT 0,
   cost_per_output_token NUMERIC(20, 10) NOT NULL DEFAULT 0,
   request_defaults JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -111,13 +111,30 @@ CREATE TABLE IF NOT EXISTS janus_spend_log (
   key_content TEXT NOT NULL,
   team_id BIGINT NOT NULL REFERENCES janus_auth_team(team_id) ON DELETE RESTRICT,
   organization_id BIGINT NOT NULL REFERENCES janus_auth_organization(organization_id) ON DELETE RESTRICT,
+  tenant TEXT NOT NULL DEFAULT '',
   model_group TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT '',
+  latency_ms BIGINT NOT NULL DEFAULT 0,
+  cache_hit BOOLEAN NOT NULL DEFAULT FALSE,
   spend NUMERIC(20, 8) NOT NULL DEFAULT 0,
   total_tokens INTEGER NOT NULL DEFAULT 0,
   prompt_tokens INTEGER NOT NULL DEFAULT 0,
   completion_tokens INTEGER NOT NULL DEFAULT 0,
   create_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Idempotent compatibility updates for databases initialized by older scripts.
+ALTER TABLE janus_model_group
+  DROP CONSTRAINT IF EXISTS janus_model_group_strategy_check;
+ALTER TABLE janus_model_group
+  ADD CONSTRAINT janus_model_group_strategy_check
+  CHECK (strategy IN ('round-robin', 'weighted', 'least-inflight', 'latency-based', 'latency', 'client-sticky'));
+
+ALTER TABLE janus_spend_log
+  ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS latency_ms BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS cache_hit BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS idx_spend_log_create_time ON janus_spend_log (create_time);
 CREATE INDEX IF NOT EXISTS idx_spend_log_key_id ON janus_spend_log (key_id);
