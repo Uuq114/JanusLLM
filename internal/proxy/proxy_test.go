@@ -27,7 +27,7 @@ type sequenceBalancer struct {
 	next   int
 }
 
-func (b *sequenceBalancer) Next() *models.ModelConfig {
+func (b *sequenceBalancer) Next(ctx balancer.SelectionContext) *models.ModelConfig {
 	if len(b.models) == 0 {
 		return nil
 	}
@@ -116,7 +116,7 @@ func TestDistinctRetryCandidatesStayUniqueForWeightedBalancer(t *testing.T) {
 	blcr.AddModel(&models.ModelConfig{Name: "backup-a", BaseURL: "http://backup-a", Weight: 1})
 	blcr.AddModel(&models.ModelConfig{Name: "backup-b", BaseURL: "http://backup-b", Weight: 1})
 
-	candidates := distinctRetryCandidates(blcr)
+	candidates := distinctRetryCandidates(blcr, balancer.SelectionContext{})
 	if len(candidates) != 3 {
 		t.Fatalf("expected 3 distinct candidates, got %d", len(candidates))
 	}
@@ -201,12 +201,29 @@ func TestHandleRequestRetriesDistinctWeightedBackup(t *testing.T) {
 	}
 }
 
+func TestRegisterModelGroupSupportsNewBalancerStrategies(t *testing.T) {
+	p := NewProxy()
+	p.RegisterModelGroup(&models.ModelGroup{Name: "latency-group", Strategy: "latency"})
+	p.RegisterModelGroup(&models.ModelGroup{Name: "sticky-group", Strategy: "client-sticky"})
+	p.RegisterModelGroup(&models.ModelGroup{Name: "rr-group", Strategy: "round_robin"})
+
+	if _, ok := p.balancers["latency-group"].(*balancer.LatencyBalancer); !ok {
+		t.Fatalf("expected latency strategy to create LatencyBalancer, got %T", p.balancers["latency-group"])
+	}
+	if _, ok := p.balancers["sticky-group"].(*balancer.ClientStickyBalancer); !ok {
+		t.Fatalf("expected client-sticky strategy to create ClientStickyBalancer, got %T", p.balancers["sticky-group"])
+	}
+	if _, ok := p.balancers["rr-group"].(*balancer.RoundRobinBalancer); !ok {
+		t.Fatalf("expected round_robin strategy to create RoundRobinBalancer, got %T", p.balancers["rr-group"])
+	}
+}
+
 func TestHandleRequestRecordsSpendForJSONWithoutContentType(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	var upstreamHits int32
 	respBody := []byte(`{"id":"chatcmpl-123","usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}`)
-	upstreamURL, closeUpstream := startRawJSONServer(t, &upstreamHits, http.StatusOK, respBody)
+	upstreamURL, closeUpstream := startRawJSONServer(t, &upstreamHits, http.StatusOK, respBody, "X-Cache-Hit: true")
 	defer closeUpstream()
 
 	groupName := "json-group"
@@ -214,7 +231,7 @@ func TestHandleRequestRecordsSpendForJSONWithoutContentType(t *testing.T) {
 		balancers: map[string]balancer.Balancer{
 			groupName: &sequenceBalancer{
 				models: []*models.ModelConfig{
-					{Name: "json-model", BaseURL: upstreamURL},
+					{Name: "json-model", Type: "anthropic", BaseURL: upstreamURL},
 				},
 			},
 		},
@@ -245,7 +262,7 @@ func TestHandleRequestRecordsSpendForJSONWithoutContentType(t *testing.T) {
 		t.Fatalf("expected upstream to be called once, got %d", got)
 	}
 
-	spendValue, exists := ctx.Get("upstreamResp")
+	spendValue, exists := ctx.Get(spend.ContextUpstreamResp)
 	if !exists {
 		t.Fatal("expected upstreamResp to be recorded for JSON body without content type")
 	}
@@ -263,6 +280,144 @@ func TestHandleRequestRecordsSpendForJSONWithoutContentType(t *testing.T) {
 	}
 	if upstreamResp.Usage.PromptTokens != 3 || upstreamResp.Usage.CompletionTokens != 4 || upstreamResp.Usage.TotalTokens != 7 {
 		t.Fatalf("unexpected usage recorded: %+v", upstreamResp.Usage)
+	}
+	if got := stringContextValue(t, ctx, spend.ContextProvider); got != "anthropic" {
+		t.Fatalf("expected provider anthropic, got %q", got)
+	}
+	if got := stringContextValue(t, ctx, spend.ContextUpstream); got != "json-model" {
+		t.Fatalf("expected upstream json-model, got %q", got)
+	}
+	if got := int64ContextValue(t, ctx, spend.ContextLatencyMS); got <= 0 {
+		t.Fatalf("expected positive latency_ms, got %d", got)
+	}
+	if got := boolContextValue(t, ctx, spend.ContextCacheHit); !got {
+		t.Fatalf("expected cache hit context to be true")
+	}
+}
+
+func TestHandleRequestRecordsSpendContextAfterStreamCompletes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("X-Cache-Hit", "1")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-stream\",\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":5,\"total_tokens\":7}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	groupName := "stream-spend-group"
+	p := &Proxy{
+		balancers: map[string]balancer.Balancer{
+			groupName: &sequenceBalancer{
+				models: []*models.ModelConfig{
+					{Name: "stream-model", BaseURL: upstream.URL},
+				},
+			},
+		},
+		groups: map[string]models.ModelGroup{
+			groupName: {Name: groupName},
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"stream-spend-group","stream":true}`)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	ctx.Request.Header.Set("Accept", "text/event-stream")
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("modelGroup", groupName)
+	ctx.Set("rawBody", body)
+	ctx.Set("logger", zap.NewNop())
+	ctx.Set("isStreamRequest", true)
+
+	p.HandleRequest(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected stream response to succeed, got status %d body %q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "chatcmpl-stream") {
+		t.Fatalf("expected streamed response body to be forwarded, got %q", rec.Body.String())
+	}
+	spendValue, exists := ctx.Get(spend.ContextUpstreamResp)
+	if !exists {
+		t.Fatal("expected upstreamResp to be recorded after SSE completion")
+	}
+	spendPayload, ok := spendValue.([]byte)
+	if !ok {
+		t.Fatalf("expected upstreamResp to be []byte, got %T", spendValue)
+	}
+	var upstreamResp spend.UpstreamResp
+	if err := json.Unmarshal(spendPayload, &upstreamResp); err != nil {
+		t.Fatalf("failed to decode upstreamResp: %v", err)
+	}
+	if upstreamResp.Id != "chatcmpl-stream" {
+		t.Fatalf("expected stream request id to be preserved, got %q", upstreamResp.Id)
+	}
+	if upstreamResp.Usage.PromptTokens != 2 || upstreamResp.Usage.CompletionTokens != 5 || upstreamResp.Usage.TotalTokens != 7 {
+		t.Fatalf("unexpected stream usage recorded: %+v", upstreamResp.Usage)
+	}
+	if got := stringContextValue(t, ctx, spend.ContextProvider); got != "openai" {
+		t.Fatalf("expected default provider openai, got %q", got)
+	}
+	if got := int64ContextValue(t, ctx, spend.ContextLatencyMS); got <= 0 {
+		t.Fatalf("expected positive latency_ms, got %d", got)
+	}
+	if got := boolContextValue(t, ctx, spend.ContextCacheHit); !got {
+		t.Fatalf("expected cache hit context to be true")
+	}
+}
+
+func TestHandleRequestSkipsStreamSpendWhenUsageMissing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-stream\"}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	groupName := "stream-no-usage-group"
+	p := &Proxy{
+		balancers: map[string]balancer.Balancer{
+			groupName: &sequenceBalancer{
+				models: []*models.ModelConfig{
+					{Name: "stream-model", BaseURL: upstream.URL},
+				},
+			},
+		},
+		groups: map[string]models.ModelGroup{
+			groupName: {Name: groupName},
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"stream-no-usage-group","stream":true}`)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	ctx.Request.Header.Set("Accept", "text/event-stream")
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("modelGroup", groupName)
+	ctx.Set("rawBody", body)
+	ctx.Set("logger", zap.NewNop())
+	ctx.Set("isStreamRequest", true)
+
+	p.HandleRequest(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected stream response to succeed, got status %d body %q", rec.Code, rec.Body.String())
+	}
+	if _, exists := ctx.Get(spend.ContextUpstreamResp); exists {
+		t.Fatal("expected upstreamResp to be omitted when stream usage is missing")
+	}
+	if got := stringContextValue(t, ctx, spend.ContextProvider); got != "openai" {
+		t.Fatalf("expected provider context to remain available, got %q", got)
+	}
+	if got := int64ContextValue(t, ctx, spend.ContextLatencyMS); got <= 0 {
+		t.Fatalf("expected positive latency_ms, got %d", got)
 	}
 }
 
@@ -364,7 +519,7 @@ func startBrokenStreamServer(t *testing.T, hits *int32) (string, func()) {
 	return "http://" + listener.Addr().String(), closeFn
 }
 
-func startRawJSONServer(t *testing.T, hits *int32, status int, body []byte) (string, func()) {
+func startRawJSONServer(t *testing.T, hits *int32, status int, body []byte, extraHeaders ...string) (string, func()) {
 	t.Helper()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -396,6 +551,9 @@ func startRawJSONServer(t *testing.T, hits *int32, status int, body []byte) (str
 				}
 
 				_, _ = io.WriteString(conn, "HTTP/1.1 "+strconv.Itoa(status)+" "+http.StatusText(status)+"\r\n")
+				for _, header := range extraHeaders {
+					_, _ = io.WriteString(conn, header+"\r\n")
+				}
 				_, _ = io.WriteString(conn, "Content-Length: "+strconv.Itoa(len(body))+"\r\n")
 				_, _ = io.WriteString(conn, "\r\n")
 				_, _ = conn.Write(body)
@@ -409,4 +567,43 @@ func startRawJSONServer(t *testing.T, hits *int32, status int, body []byte) (str
 	}
 
 	return "http://" + listener.Addr().String(), closeFn
+}
+
+func stringContextValue(t *testing.T, ctx *gin.Context, key string) string {
+	t.Helper()
+	value, exists := ctx.Get(key)
+	if !exists {
+		t.Fatalf("expected context key %q to be set", key)
+	}
+	text, ok := value.(string)
+	if !ok {
+		t.Fatalf("expected context key %q to be string, got %T", key, value)
+	}
+	return text
+}
+
+func int64ContextValue(t *testing.T, ctx *gin.Context, key string) int64 {
+	t.Helper()
+	value, exists := ctx.Get(key)
+	if !exists {
+		t.Fatalf("expected context key %q to be set", key)
+	}
+	number, ok := value.(int64)
+	if !ok {
+		t.Fatalf("expected context key %q to be int64, got %T", key, value)
+	}
+	return number
+}
+
+func boolContextValue(t *testing.T, ctx *gin.Context, key string) bool {
+	t.Helper()
+	value, exists := ctx.Get(key)
+	if !exists {
+		t.Fatalf("expected context key %q to be set", key)
+	}
+	flag, ok := value.(bool)
+	if !ok {
+		t.Fatalf("expected context key %q to be bool, got %T", key, value)
+	}
+	return flag
 }

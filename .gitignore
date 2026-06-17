@@ -29,3 +29,6 @@ go.work.sum
 
 # config file
 config/config.yaml
+
+# Agent loop scratch artifacts
+.agent-artifacts/

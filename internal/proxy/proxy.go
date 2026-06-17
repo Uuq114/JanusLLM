@@ -48,13 +48,7 @@ func NewProxy() *Proxy {
 }
 
 func (p *Proxy) RegisterModelGroup(group *models.ModelGroup) {
-	var b balancer.Balancer
-	switch strings.ToLower(group.Strategy) {
-	case "weighted":
-		b = balancer.NewWeightedBalancer()
-	default:
-		b = balancer.NewRoundRobinBalancer()
-	}
+	b := balancer.New(group.Strategy)
 
 	for _, model := range group.Models {
 		b.AddModel(&model)
@@ -191,7 +185,8 @@ func (p *Proxy) HandleRequest(c *gin.Context) {
 		return
 	}
 
-	candidates := distinctRetryCandidates(blcr)
+	selectionCtx := buildSelectionContext(c, modelGroup, endpointPath)
+	candidates := distinctRetryCandidates(blcr, selectionCtx)
 	if len(candidates) == 0 {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no available models"})
 		return
@@ -201,7 +196,9 @@ func (p *Proxy) HandleRequest(c *gin.Context) {
 	for candidateIndex, upstreamModel := range candidates {
 		maxAttempts := perUpstreamAttempts(upstreamModel)
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			start := time.Now()
 			status, shouldRetry, err := p.forwardOnce(c, endpointPath, modelGroup, upstreamModel, rawBody, logger)
+			observeBalancer(blcr, upstreamModel, time.Since(start), err == nil, shouldRetry)
 			if err == nil {
 				return
 			}
@@ -261,6 +258,7 @@ func (p *Proxy) forwardOnce(c *gin.Context, endpointPath string, modelGroup stri
 	if !ok {
 		return http.StatusNotFound, false, fmt.Errorf("model group not found: %s", modelGroup)
 	}
+	upstreamStart := time.Now()
 	preparedBody, err := prepareUpstreamBody(rawBody, upstreamModel.Name, groupCfg.RequestDefaults)
 	if err != nil {
 		return http.StatusBadRequest, false, err
@@ -299,9 +297,22 @@ func (p *Proxy) forwardOnce(c *gin.Context, endpointPath string, modelGroup stri
 		if streamErr != nil {
 			return http.StatusBadGateway, false, streamErr
 		}
+		setSpendContext(c, upstreamModel, resp.Header, time.Since(upstreamStart))
 		if len(streamUsage) > 0 {
-			c.Set("upstreamResp", streamUsage)
+			c.Set(spend.ContextUpstreamResp, streamUsage)
+		} else {
+			logger.Warn("stream completed without token usage; spend record skipped",
+				zap.String("model", modelGroup),
+				zap.String("upstream", upstreamModel.Name),
+			)
 		}
+		logger.Info("upstream stream request succeeded",
+			zap.Int("status", resp.StatusCode),
+			zap.String("model", modelGroup),
+			zap.String("upstream", upstreamModel.Name),
+			zap.Int64("latency_ms", latencyMilliseconds(time.Since(upstreamStart))),
+			zap.Bool("cache_hit", cacheHitFromHeaders(resp.Header)),
+		)
 		return resp.StatusCode, false, nil
 	}
 
@@ -312,15 +323,18 @@ func (p *Proxy) forwardOnce(c *gin.Context, endpointPath string, modelGroup stri
 
 	copyResponseHeaders(c, resp.Header)
 	c.Data(resp.StatusCode, contentType(resp.Header), respBody)
+	setSpendContext(c, upstreamModel, resp.Header, time.Since(upstreamStart))
 
 	if spendPayload, payloadErr := adapter.BuildSpendPayload(respBody); payloadErr == nil && len(spendPayload) > 0 {
-		c.Set("upstreamResp", spendPayload)
+		c.Set(spend.ContextUpstreamResp, spendPayload)
 	}
 
 	logger.Info("upstream request succeeded",
 		zap.Int("status", resp.StatusCode),
 		zap.String("model", modelGroup),
 		zap.String("upstream", upstreamModel.Name),
+		zap.Int64("latency_ms", latencyMilliseconds(time.Since(upstreamStart))),
+		zap.Bool("cache_hit", cacheHitFromHeaders(resp.Header)),
 	)
 
 	return resp.StatusCode, false, nil
@@ -372,7 +386,127 @@ func perUpstreamAttempts(upstreamModel *models.ModelConfig) int {
 	return upstreamModel.RetryTimes + 1
 }
 
-func distinctRetryCandidates(blcr balancer.Balancer) []*models.ModelConfig {
+func buildSelectionContext(c *gin.Context, modelGroup string, endpointPath string) balancer.SelectionContext {
+	ctx := balancer.SelectionContext{
+		ModelGroup: modelGroup,
+		Path:       endpointPath,
+		ClientIP:   c.ClientIP(),
+		Headers: map[string]string{
+			"X-Janus-Client":   c.GetHeader("X-Janus-Client"),
+			"X-Client-ID":      c.GetHeader("X-Client-ID"),
+			"X-User-ID":        c.GetHeader("X-User-ID"),
+			"X-Team-ID":        c.GetHeader("X-Team-ID"),
+			"X-Forwarded-User": c.GetHeader("X-Forwarded-User"),
+		},
+	}
+
+	keyValue, ok := c.Get("key")
+	if !ok {
+		ctx.ClientKey = firstStableHeader(ctx.Headers)
+		if ctx.ClientKey == "" && ctx.ClientIP != "" {
+			ctx.ClientKey = "ip:" + ctx.ClientIP
+		}
+		return ctx
+	}
+	keyInfo, ok := keyValue.(auth.Key)
+	if !ok {
+		return ctx
+	}
+
+	ctx.KeyID = keyInfo.KeyId
+	ctx.KeyName = keyInfo.KeyName
+	ctx.TeamID = keyInfo.TeamId
+	ctx.OrganizationID = keyInfo.OrganizationId
+	switch {
+	case keyInfo.KeyId > 0:
+		ctx.ClientKey = fmt.Sprintf("key:%d", keyInfo.KeyId)
+	case strings.TrimSpace(keyInfo.KeyContent) != "":
+		ctx.ClientKey = "key:" + strings.TrimSpace(keyInfo.KeyContent)
+	case strings.TrimSpace(keyInfo.KeyName) != "":
+		ctx.ClientKey = "key-name:" + strings.TrimSpace(keyInfo.KeyName)
+	case keyInfo.TeamId > 0:
+		ctx.ClientKey = fmt.Sprintf("team:%d", keyInfo.TeamId)
+	case keyInfo.OrganizationId > 0:
+		ctx.ClientKey = fmt.Sprintf("org:%d", keyInfo.OrganizationId)
+	}
+	return ctx
+}
+
+func setSpendContext(c *gin.Context, upstreamModel *models.ModelConfig, headers http.Header, latency time.Duration) {
+	if upstreamModel == nil {
+		return
+	}
+	c.Set(spend.ContextProvider, providerName(upstreamModel))
+	c.Set(spend.ContextUpstream, upstreamModel.Name)
+	c.Set(spend.ContextUpstreamModel, upstreamModel.Name)
+	c.Set(spend.ContextLatencyMS, latencyMilliseconds(latency))
+	c.Set(spend.ContextCacheHit, cacheHitFromHeaders(headers))
+}
+
+func providerName(upstreamModel *models.ModelConfig) string {
+	if upstreamModel == nil {
+		return ""
+	}
+	provider := strings.TrimSpace(upstreamModel.Type)
+	if provider == "" {
+		return "openai"
+	}
+	if strings.EqualFold(provider, "claude") {
+		return "anthropic"
+	}
+	return strings.ToLower(provider)
+}
+
+func latencyMilliseconds(latency time.Duration) int64 {
+	if latency < 0 {
+		return 0
+	}
+	ms := latency.Milliseconds()
+	if ms == 0 {
+		return 1
+	}
+	return ms
+}
+
+func cacheHitFromHeaders(headers http.Header) bool {
+	values := []string{
+		headers.Get("x-cache-hit"),
+		headers.Get("x-cache"),
+		headers.Get("cf-cache-status"),
+	}
+	for _, value := range values {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "1", "true", "yes", "hit":
+			return true
+		}
+	}
+	return false
+}
+
+func firstStableHeader(headers map[string]string) string {
+	for _, name := range []string{"X-Janus-Client", "X-Client-ID", "X-User-ID", "X-Team-ID", "X-Forwarded-User"} {
+		if value := strings.TrimSpace(headers[name]); value != "" {
+			return strings.ToLower(name) + ":" + value
+		}
+	}
+	return ""
+}
+
+func observeBalancer(blcr balancer.Balancer, upstreamModel *models.ModelConfig, latency time.Duration, success bool, shouldRetry bool) {
+	observer, ok := blcr.(balancer.Observer)
+	if !ok {
+		return
+	}
+	if success {
+		observer.Observe(upstreamModel, latency, true)
+		return
+	}
+	if shouldRetry {
+		observer.Observe(upstreamModel, latency, false)
+	}
+}
+
+func distinctRetryCandidates(blcr balancer.Balancer, ctx balancer.SelectionContext) []*models.ModelConfig {
 	if blcr == nil {
 		return nil
 	}
@@ -382,7 +516,7 @@ func distinctRetryCandidates(blcr balancer.Balancer) []*models.ModelConfig {
 		return nil
 	}
 
-	primary := blcr.Next()
+	primary := blcr.Next(ctx)
 	if primary == nil {
 		return nil
 	}

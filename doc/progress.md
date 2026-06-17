@@ -1,92 +1,112 @@
-﻿# JanusLLM 开发看板（Phase 版）
+# JanusLLM Progress Board
 
-最后更新：2026-04-04
+Last updated: 2026-05-31
 
-## 总览
+## Overview
 
-- Phase 1（接入层）：进行中（约 75%）
-- Phase 2（治理层）：进行中（约 40%）
-- Phase 3（调度层）：进行中（约 35%）
-- Phase 4（计费与后台）：进行中（约 30%）
-- Phase 5（语义缓存）：未开始（0%）
-- Phase 6（压测与部署）：未开始（0%）
+- Phase 1, API ingress: in progress, about 85%.
+- Phase 2, governance: in progress, about 55%.
+- Phase 3, routing: in progress, about 60%.
+- Phase 4, billing and admin: in progress, about 60%.
+- Phase 5, semantic cache: not started.
+- Phase 6, load testing and deployment: not started.
 
-## Phase 1：接入层（基础代理 + OpenAI/Anthropic + SSE）
+## Phase 1: API Ingress
 
-- [x] Gin 网关基础服务
-- [x] 原生接口透传：`/v1/chat/completions`
-- [x] 原生接口透传：`/v1/messages`
-- [x] 原生接口透传：`/v1/completions`
-- [x] 原生接口透传：`/v1/embeddings`
-- [x] `/v1/models` 网关本地返回可访问模型列表
-- [x] OpenAI/Anthropic 基础 adapter
-- [x] SSE 流式透传
-- [ ] 错误标准化（统一错误码/错误结构）
-- [ ] header 透传白名单（当前是透传为主）
+- [x] Gin gateway service.
+- [x] Native proxy: `/v1/chat/completions`.
+- [x] Native proxy: `/v1/messages`.
+- [x] Native proxy: `/v1/completions`.
+- [x] Native proxy: `/v1/embeddings`.
+- [x] Local `/v1/models` response filtered by key permissions.
+- [x] OpenAI and Anthropic adapters.
+- [x] SSE streaming proxy.
+- [x] Swagger UI and OpenAPI JSON.
+- [ ] Full error response standardization.
+- [ ] Header forwarding allowlist.
 
-## Phase 2：治理层（API Key + 限流/配额）
+## Phase 2: Governance
 
-- [x] API Key 鉴权
-- [x] 模型权限控制（`model_list`）
-- [x] RPM 限流
-- [x] `RequestPerMinute=0` 不限流语义修复
-- [x] 并发安全（请求环与消费队列加锁）
-- [ ] TPM 限流
-- [ ] 日/月 token 限额
-- [ ] 日/月费用预算限额
-- [ ] 并发限制
-- [ ] IP 白名单
-- [ ] 角色体系（平台管理员/租户管理员）
+- [x] API key authentication.
+- [x] Effective model permissions from key/team intersection.
+- [x] RPM rate limiting.
+- [x] `RequestPerMinute=0` means unlimited RPM.
+- [x] Key cache refresh and idle eviction.
+- [x] Admin Basic Auth.
+- [x] Organization, team, and key admin APIs.
+- [x] Legacy auth helpers no longer call `log.Fatal`; they expose error-returning variants.
+- [ ] TPM limiting.
+- [ ] Daily/monthly token quotas.
+- [ ] Daily/monthly spend budgets.
+- [ ] Concurrency limits.
+- [ ] IP allowlists.
+- [ ] Full role model.
 
-## Phase 3：调度层（路由 + fallback + 健康检查）
+## Phase 3: Routing
 
-- [x] Round Robin
-- [x] Weighted
-- [x] 基础 retry/fallback（同模型组内实例）
-- [x] 上游超时控制
-- [ ] Least inflight
-- [ ] Latency-based
-- [ ] Score 路由
-- [ ] 主动健康检查
-- [ ] 被动健康检查
-- [ ] 熔断与半开恢复
-- [ ] 同 provider / 跨 provider fallback 策略细化
+- [x] Round-robin strategy.
+- [x] Weighted strategy.
+- [x] Latency-based strategy.
+- [x] Client-sticky strategy based on stable client identity.
+- [x] Extensible balancer interface with request selection context.
+- [x] Basic retry/fallback within a model group.
+- [x] Upstream timeout control.
+- [ ] Least-inflight strategy.
+- [ ] Active health checks.
+- [ ] Passive health checks.
+- [ ] Circuit breaker and half-open recovery.
+- [ ] More detailed same-provider and cross-provider fallback policies.
 
-## Phase 4：计费 + 管理后台
+## Phase 4: Billing And Admin
 
-- [x] 按 token 计费
-- [x] `janus_spend_log` 消费落库
-- [x] key 余额扣减
-- [x] 时间字段由数据库维护（create/update）
-- [ ] usage 字段补齐（provider、latency、cache_hit、tenant）
-- [ ] 流式请求计费落库
-- [ ] 管理后台（key、配额、报表）
+- [x] Token-based billing.
+- [x] `janus_spend_log` persistence.
+- [x] Key balance deduction and total spend update.
+- [x] Database-managed create/update timestamps.
+- [x] PostgreSQL schema.
+- [x] Runtime PostgreSQL driver.
+- [x] Backend admin API.
+- [x] Startup sync from YAML model config to DB model tables.
+- [x] Spend log fields: `provider`, `latency_ms`, `cache_hit`, `tenant`.
+- [x] Streaming billing skips records when upstream usage is missing.
+- [x] Modern React admin frontend scaffold under `web/`.
+- [ ] Admin frontend connected to live APIs.
+- [ ] Dashboard/reporting query APIs.
 
-## Phase 5：语义缓存
+## Phase 5: Semantic Cache
 
-- [ ] L1 精确缓存
-- [ ] L2 语义缓存（embedding + 向量检索）
-- [ ] L3 prompt 片段缓存
-- [ ] `x-cache-hit` 响应头
-- [ ] 租户隔离缓存策略
+- [ ] L1 exact cache.
+- [ ] L2 semantic cache with embeddings/vector search.
+- [ ] L3 prompt fragment cache.
+- [ ] `x-cache-hit` response header from Janus cache.
+- [ ] Tenant-isolated cache policy.
 
-## Phase 6：压测与部署
+## Phase 6: Load Testing And Deployment
 
-- [ ] 压测基线（QPS、p95/p99、错误率）
-- [ ] 部署清单（容器化、回滚）
-- [ ] 观测体系（Prometheus/Grafana/OTel）
-- [ ] 生产发布流程（灰度/回滚）
+- [ ] Load test baseline: QPS, p95/p99, error rate.
+- [ ] Container and deployment manifests.
+- [ ] Observability with Prometheus/Grafana/OpenTelemetry.
+- [ ] Production rollout and rollback process.
 
-## 当前阻塞与技术债
+## Current Branch Goals
 
-- [ ] `internal/auth/organization.go` 与 `internal/auth/user.go` 仍有 `log.Fatal`
-- [ ] 运行时 DB 驱动仍是 MySQL，目标是 PostgreSQL
-- [x] PostgreSQL 建表脚本已落地：`scripts/db/create_core_tables.sql`
-- [ ] 动态配置尚未从数据库加载（模型配置仍以启动配置为主）
+- [x] Create the work branch from latest `main`.
+- [x] Align docs with current code progress.
+- [x] Keep YAML as the runtime source of truth and sync model config to DB at startup.
+- [x] Replace `log.Fatal` in auth helpers with graceful error handling.
+- [x] Add a modern minimal admin frontend.
+- [x] Extend load balancing strategies for round-robin, weighted, latency, and client-sticky routing.
+- [x] Add `provider`, `latency_ms`, `cache_hit`, and `tenant` to spend logs and improve streaming billing.
 
-## 下一迭代建议（优先级）
+## Remaining Risks
 
-- [ ] P0：Phase 2 配额体系（TPM + 预算 + 并发）
-- [ ] P0：Phase 3 健康检查 + 熔断
-- [ ] P1：计费字段补齐 + 流式计费
-- [ ] P1：切 PostgreSQL 运行时驱动并接入现有 DDL
+- Frontend build was not verified in this environment because `npm` is not available on PATH.
+- The DB migration script is idempotent for existing Janus tables, but it still needs a real PostgreSQL smoke test before release.
+- The frontend currently uses mock data; live admin API integration is the next product step.
+
+## Suggested Next Iteration
+
+- [ ] Connect the React admin dashboard to `/v1/admin/*` and `/v1/models`.
+- [ ] Add TPM, budget, and concurrency limits.
+- [ ] Add active/passive health checks and circuit breaking.
+- [ ] Add observability and load-test baselines.

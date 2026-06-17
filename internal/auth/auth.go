@@ -32,6 +32,11 @@ type Key struct {
 
 type StringSlice []string
 
+var (
+	connectAuthDatabase         = janusDb.ConnectDatabase
+	closeAuthDatabaseConnection = janusDb.CloseDatabaseConnection
+)
+
 func ToString(s StringSlice) string {
 	return strings.Join(s, ",")
 }
@@ -139,22 +144,32 @@ func RedactKeyContent(keyContent string) string {
 
 func CreateKeyRecord(keyContent string, keyName string, modelList []string, teamName string, organizationName string,
 	balance float64, requestPerMinute int, spendLimitPerWeek float64) {
-	db, err := janusDb.ConnectDatabase()
-	if err != nil {
-		log.Printf("CreateKeyRecord: connect database failed: %v", err)
-		return
+	if err := CreateKeyRecordWithError(keyContent, keyName, modelList, teamName, organizationName, balance, requestPerMinute, spendLimitPerWeek); err != nil {
+		log.Printf("CreateKeyRecord: %v", err)
 	}
-	defer janusDb.CloseDatabaseConnection(db)
+}
 
-	team := GetTeamRecord(teamName)
-	if team == nil {
-		log.Printf("CreateKeyRecord: team record not found: %s", teamName)
-		return
+func CreateKeyRecordWithError(keyContent string, keyName string, modelList []string, teamName string, organizationName string,
+	balance float64, requestPerMinute int, spendLimitPerWeek float64) error {
+	db, err := connectAuthDatabase()
+	if err != nil {
+		return fmt.Errorf("connect database: %w", err)
 	}
-	organization := GetOrganizationRecord(organizationName)
+	defer closeAuthDatabaseConnection(db)
+
+	team, err := getTeamRecord(db, teamName)
+	if err != nil {
+		return err
+	}
+	if team == nil {
+		return fmt.Errorf("team record not found: %s", teamName)
+	}
+	organization, err := getOrganizationRecord(db, organizationName)
+	if err != nil {
+		return err
+	}
 	if organization == nil {
-		log.Printf("CreateKeyRecord: organization record not found: %s", organizationName)
-		return
+		return fmt.Errorf("organization record not found: %s", organizationName)
 	}
 
 	result := db.Table("janus_auth_key").Omit("create_time").Create(&Key{
@@ -170,8 +185,9 @@ func CreateKeyRecord(keyContent string, keyName string, modelList []string, team
 		ExpireTime:        time.Now().Add(30 * 24 * time.Hour),
 	})
 	if result.Error != nil {
-		log.Printf("CreateKeyRecord: create failed: %v", result.Error)
+		return fmt.Errorf("create key record: %w", result.Error)
 	}
+	return nil
 }
 
 func CheckKeyRecord(keyContent string) bool {
@@ -183,12 +199,12 @@ func CheckKeyRecord(keyContent string) bool {
 }
 
 func GetKeyByContent(keyContent string) (*Key, error) {
-	db, err := janusDb.ConnectDatabase()
+	db, err := connectAuthDatabase()
 	if err != nil {
 		log.Printf("GetKeyByContent: connect database failed: %v", err)
 		return nil, err
 	}
-	defer janusDb.CloseDatabaseConnection(db)
+	defer closeAuthDatabaseConnection(db)
 
 	var key Key
 	result := keyQuery(db).
@@ -205,12 +221,12 @@ func GetKeyByContent(keyContent string) (*Key, error) {
 }
 
 func GetValidKeyByContent(keyContent string) (*Key, error) {
-	db, err := janusDb.ConnectDatabase()
+	db, err := connectAuthDatabase()
 	if err != nil {
 		log.Printf("GetValidKeyByContent: connect database failed: %v", err)
 		return nil, err
 	}
-	defer janusDb.CloseDatabaseConnection(db)
+	defer closeAuthDatabaseConnection(db)
 
 	var key Key
 	result := keyQuery(db).
@@ -229,12 +245,12 @@ func GetValidKeyByContent(keyContent string) (*Key, error) {
 }
 
 func GetAllValidKey() []Key {
-	db, err := janusDb.ConnectDatabase()
+	db, err := connectAuthDatabase()
 	if err != nil {
 		log.Printf("GetAllValidKey: connect database failed: %v", err)
 		return nil
 	}
-	defer janusDb.CloseDatabaseConnection(db)
+	defer closeAuthDatabaseConnection(db)
 
 	var keys []Key
 	result := keyQuery(db).
@@ -249,12 +265,12 @@ func GetAllValidKey() []Key {
 }
 
 func DeleteKeyRecord(keyContent string) {
-	db, err := janusDb.ConnectDatabase()
+	db, err := connectAuthDatabase()
 	if err != nil {
 		log.Printf("DeleteKeyRecord: connect database failed: %v", err)
 		return
 	}
-	defer janusDb.CloseDatabaseConnection(db)
+	defer closeAuthDatabaseConnection(db)
 
 	result := db.Table("janus_auth_key").Where("key_content = ?", keyContent).Delete(&Key{})
 	if result.Error != nil {

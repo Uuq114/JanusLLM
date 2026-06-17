@@ -3,8 +3,8 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -52,15 +52,25 @@ type keyValidationResult struct {
 }
 
 func main() {
+	if err := run(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "JanusLLM startup failed: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	config, err := loadJanusConfig("../config/config.yaml")
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		return fmt.Errorf("load config: %w", err)
 	}
 	logger := buildLogger(config.Service.LogLevel)
 	defer logger.Sync()
 
 	if err := syncMasterAdminUser(config.Admin, logger); err != nil {
-		log.Fatalf("Failed to sync master admin user: %v", err)
+		return fmt.Errorf("sync master admin user: %w", err)
+	}
+	if err := syncConfigToDB(config, logger); err != nil {
+		return fmt.Errorf("sync model config: %w", err)
 	}
 
 	p := proxy.NewProxy()
@@ -92,8 +102,9 @@ func main() {
 	}
 
 	if err := r.Run(":" + strconv.Itoa(config.Service.Port)); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+		return fmt.Errorf("start server: %w", err)
 	}
+	return nil
 }
 
 type ServiceConfig struct {
@@ -451,7 +462,14 @@ func logSpendMiddleware(logger *zap.Logger) gin.HandlerFunc {
 			return
 		}
 
-		if _, ok := c.Get("upstreamResp"); !ok {
+		if _, ok := c.Get(spend.ContextUpstreamResp); !ok {
+			if isStreamRequestContext(c) && c.Writer.Status() < http.StatusBadRequest {
+				logger.Warn("Request completed without usage; spend not queued",
+					zap.String("model", stringContext(c, "modelGroup")),
+					zap.String("provider", stringContext(c, spend.ContextProvider)),
+					zap.String("upstream", stringContext(c, spend.ContextUpstream)),
+				)
+			}
 			return
 		}
 		key, ok := c.Get("key")
@@ -470,6 +488,27 @@ func logSpendMiddleware(logger *zap.Logger) gin.HandlerFunc {
 			}
 		}
 	}
+}
+
+func isStreamRequestContext(c *gin.Context) bool {
+	value, ok := c.Get("isStreamRequest")
+	if !ok {
+		return false
+	}
+	stream, ok := value.(bool)
+	return ok && stream
+}
+
+func stringContext(c *gin.Context, key string) string {
+	value, ok := c.Get(key)
+	if !ok {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return text
 }
 
 func requiresModel(path string) bool {

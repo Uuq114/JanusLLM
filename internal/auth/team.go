@@ -1,9 +1,11 @@
 package auth
 
 import (
+	"errors"
+	"fmt"
 	"log"
 
-	janusDb "github.com/Uuq114/JanusLLM/internal/db"
+	"gorm.io/gorm"
 )
 
 type Team struct {
@@ -14,16 +16,23 @@ type Team struct {
 }
 
 func CreateTeamRecord(teamName string, organizationName string) {
-	db, err := janusDb.ConnectDatabase()
-	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
-		return
+	if err := CreateTeamRecordWithError(teamName, organizationName); err != nil {
+		log.Printf("CreateTeamRecord: %v", err)
 	}
-	defer janusDb.CloseDatabaseConnection(db)
-	organization := GetOrganizationRecord(organizationName)
+}
+
+func CreateTeamRecordWithError(teamName string, organizationName string) error {
+	db, err := connectAuthDatabase()
+	if err != nil {
+		return fmt.Errorf("connect database: %w", err)
+	}
+	defer closeAuthDatabaseConnection(db)
+	organization, err := getOrganizationRecord(db, organizationName)
+	if err != nil {
+		return err
+	}
 	if organization == nil {
-		log.Fatal("Organization record not found, name", organizationName)
-		return
+		return fmt.Errorf("organization record not found: %s", organizationName)
 	}
 	result := db.Table("janus_auth_team").Create(&Team{
 		TeamName:       teamName,
@@ -31,71 +40,99 @@ func CreateTeamRecord(teamName string, organizationName string) {
 		OrganizationId: organization.OrganizationId,
 	})
 	if result.Error != nil {
-		log.Fatal("Failed to create team record, err:", result.Error)
-		return
+		return fmt.Errorf("create team record: %w", result.Error)
 	}
+	return nil
 }
 
 func GetTeamRecord(teamName string) *Team {
-	db, err := janusDb.ConnectDatabase()
+	team, err := GetTeamRecordWithError(teamName)
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
+		log.Printf("GetTeamRecord: %v", err)
 		return nil
 	}
-	defer janusDb.CloseDatabaseConnection(db)
+	return team
+}
+
+func GetTeamRecordWithError(teamName string) (*Team, error) {
+	db, err := connectAuthDatabase()
+	if err != nil {
+		return nil, fmt.Errorf("connect database: %w", err)
+	}
+	defer closeAuthDatabaseConnection(db)
+	return getTeamRecord(db, teamName)
+}
+
+func getTeamRecord(db *gorm.DB, teamName string) (*Team, error) {
 	var team Team
 	result := db.Table("janus_auth_team").Where("team_name = ?", teamName).First(&team)
 	if result.Error != nil {
-		log.Fatal("Failed to get team record, err:", result.Error)
-		return nil
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get team record: %w", result.Error)
 	}
-	return &team
+	return &team, nil
 }
 
 // update team's organization, not team name
 
 func UpdateTeamRecord(teamName string, organizationName string) {
-	db, err := janusDb.ConnectDatabase()
-	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
-		return
-	}
-	defer janusDb.CloseDatabaseConnection(db)
-	var team Team
-	result := db.Table("janus_auth_team").Where("team_name = ?", teamName).First(&team)
-	if result.Error != nil {
-		log.Fatal("Failed to get team record, err:", result.Error)
-		return
-	}
-	organization := GetOrganizationRecord(organizationName)
-	if organization == nil {
-		log.Fatal("Organization record not found, name", organizationName)
-		return
-	}
-	team.OrganizationId = organization.OrganizationId
-	result = db.Table("janus_auth_team").Save(&team)
-	if result.Error != nil {
-		log.Fatal("Failed to update team record, err:", result.Error)
-		return
+	if err := UpdateTeamRecordWithError(teamName, organizationName); err != nil {
+		log.Printf("UpdateTeamRecord: %v", err)
 	}
 }
 
-func DeleteTeamRecord(teamName string) {
-	db, err := janusDb.ConnectDatabase()
+func UpdateTeamRecordWithError(teamName string, organizationName string) error {
+	db, err := connectAuthDatabase()
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
-		return
+		return fmt.Errorf("connect database: %w", err)
 	}
-	defer janusDb.CloseDatabaseConnection(db)
-	var team Team
-	result := db.Table("janus_auth_team").Where("team_name = ?", teamName).First(&team)
+	defer closeAuthDatabaseConnection(db)
+	team, err := getTeamRecord(db, teamName)
+	if err != nil {
+		return err
+	}
+	if team == nil {
+		return fmt.Errorf("team record not found: %s", teamName)
+	}
+	organization, err := getOrganizationRecord(db, organizationName)
+	if err != nil {
+		return err
+	}
+	if organization == nil {
+		return fmt.Errorf("organization record not found: %s", organizationName)
+	}
+	team.OrganizationId = organization.OrganizationId
+	result := db.Table("janus_auth_team").Save(team)
 	if result.Error != nil {
-		log.Fatal("Failed to get team record, err:", result.Error)
-		return
+		return fmt.Errorf("update team record: %w", result.Error)
 	}
-	result = db.Table("janus_auth_team").Delete(&team)
+	return nil
+}
+
+func DeleteTeamRecord(teamName string) {
+	if err := DeleteTeamRecordWithError(teamName); err != nil {
+		log.Printf("DeleteTeamRecord: %v", err)
+	}
+}
+
+func DeleteTeamRecordWithError(teamName string) error {
+	db, err := connectAuthDatabase()
+	if err != nil {
+		return fmt.Errorf("connect database: %w", err)
+	}
+	defer closeAuthDatabaseConnection(db)
+	team, err := getTeamRecord(db, teamName)
+	if err != nil {
+		return err
+	}
+	if team == nil {
+		return fmt.Errorf("team record not found: %s", teamName)
+	}
+	result := db.Table("janus_auth_team").Delete(team)
 	if result.Error != nil {
-		log.Fatal("Failed to delete team record, err:", result.Error)
-		return
+		return fmt.Errorf("delete team record: %w", result.Error)
 	}
+	return nil
 }

@@ -1,9 +1,11 @@
 package auth
 
 import (
+	"errors"
+	"fmt"
 	"log"
 
-	janusDb "github.com/Uuq114/JanusLLM/internal/db"
+	"gorm.io/gorm"
 )
 
 type Organization struct {
@@ -12,70 +14,101 @@ type Organization struct {
 }
 
 func CreateOrganizationRecord(name string) {
-	db, err := janusDb.ConnectDatabase()
-	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
-		return
+	if err := CreateOrganizationRecordWithError(name); err != nil {
+		log.Printf("CreateOrganizationRecord: %v", err)
 	}
-	defer janusDb.CloseDatabaseConnection(db)
+}
+
+func CreateOrganizationRecordWithError(name string) error {
+	db, err := connectAuthDatabase()
+	if err != nil {
+		return fmt.Errorf("connect database: %w", err)
+	}
+	defer closeAuthDatabaseConnection(db)
 	result := db.Table("janus_auth_organization").Create(&Organization{OrganizationName: name})
 	if result.Error != nil {
-		log.Fatal("Failed to create organization record, err:", result.Error)
-		return
+		return fmt.Errorf("create organization record: %w", result.Error)
 	}
+	return nil
 }
 
 func GetOrganizationRecord(name string) *Organization {
-	db, err := janusDb.ConnectDatabase()
+	organization, err := GetOrganizationRecordWithError(name)
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
+		log.Printf("GetOrganizationRecord: %v", err)
 		return nil
 	}
-	defer janusDb.CloseDatabaseConnection(db)
+	return organization
+}
+
+func GetOrganizationRecordWithError(name string) (*Organization, error) {
+	db, err := connectAuthDatabase()
+	if err != nil {
+		return nil, fmt.Errorf("connect database: %w", err)
+	}
+	defer closeAuthDatabaseConnection(db)
+	return getOrganizationRecord(db, name)
+}
+
+func getOrganizationRecord(db *gorm.DB, name string) (*Organization, error) {
 	var organization Organization
 	result := db.Table("janus_auth_organization").Where("organization_name = ?", name).First(&organization)
 	if result.Error != nil {
-		log.Fatal("Failed to get organization record, err:", result.Error)
-		return nil
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get organization record: %w", result.Error)
 	}
-	return &organization
+	return &organization, nil
 }
 
 func UpdateOrganizationRecord(name string) {
-	db, err := janusDb.ConnectDatabase()
-	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
-		return
-	}
-	defer janusDb.CloseDatabaseConnection(db)
-	var organization Organization
-	result := db.Table("janus_auth_organization").Where("organization_name = ?", name).First(&organization)
-	if result.Error != nil {
-		log.Fatal("Failed to get organization record, err:", result.Error)
-		return
-	}
-	result = db.Table("janus_auth_organization").Save(&organization)
-	if result.Error != nil {
-		log.Fatal("Failed to update organization record, err:", result.Error)
-		return
+	if err := UpdateOrganizationRecordWithError(name); err != nil {
+		log.Printf("UpdateOrganizationRecord: %v", err)
 	}
 }
-func DeleteOrganizationRecord(name string) {
-	db, err := janusDb.ConnectDatabase()
+
+func UpdateOrganizationRecordWithError(name string) error {
+	db, err := connectAuthDatabase()
 	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
-		return
+		return fmt.Errorf("connect database: %w", err)
 	}
-	defer janusDb.CloseDatabaseConnection(db)
-	var organization Organization
-	result := db.Table("janus_auth_organization").Where("organization_name = ?", name).First(&organization)
+	defer closeAuthDatabaseConnection(db)
+	organization, err := getOrganizationRecord(db, name)
+	if err != nil {
+		return err
+	}
+	if organization == nil {
+		return fmt.Errorf("organization record not found: %s", name)
+	}
+	result := db.Table("janus_auth_organization").Save(organization)
 	if result.Error != nil {
-		log.Fatal("Failed to get organization record, err:", result.Error)
-		return
+		return fmt.Errorf("update organization record: %w", result.Error)
 	}
-	result = db.Table("janus_auth_organization").Delete(&organization)
+	return nil
+}
+func DeleteOrganizationRecord(name string) {
+	if err := DeleteOrganizationRecordWithError(name); err != nil {
+		log.Printf("DeleteOrganizationRecord: %v", err)
+	}
+}
+
+func DeleteOrganizationRecordWithError(name string) error {
+	db, err := connectAuthDatabase()
+	if err != nil {
+		return fmt.Errorf("connect database: %w", err)
+	}
+	defer closeAuthDatabaseConnection(db)
+	organization, err := getOrganizationRecord(db, name)
+	if err != nil {
+		return err
+	}
+	if organization == nil {
+		return fmt.Errorf("organization record not found: %s", name)
+	}
+	result := db.Table("janus_auth_organization").Delete(organization)
 	if result.Error != nil {
-		log.Fatal("Failed to delete organization record, err:", result.Error)
-		return
+		return fmt.Errorf("delete organization record: %w", result.Error)
 	}
+	return nil
 }

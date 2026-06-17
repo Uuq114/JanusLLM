@@ -1,486 +1,179 @@
-# 🧠 LLM 智能网关设计方案（Golang 实现）
+# JanusLLM Design Plan
 
-## 1. 项目目标
+Last updated: 2026-05-31
 
-构建一个对标 LiteLLM / OpenRouter 的 **LLM 智能网关**，具备以下能力：
+## 1. Goal
 
-* 统一接入多种 LLM Provider（OpenAI / Anthropic / 自建模型等）
-* 提供 API Key 管理、权限控制、计费与审计能力
-* 实现智能路由、负载均衡与 fallback
-* 支持语义缓存，降低成本
-* 支持多租户与后台管理
+JanusLLM is an LLM gateway for multiple model providers. It provides one API entry point, authorization, routing, billing, admin operations, and future cache/observability features.
 
----
+Core goals:
 
-## 2. 产品定位
+- Proxy OpenAI-compatible and Anthropic-compatible APIs.
+- Control access by API key, team, and organization.
+- Route logical model groups to one or more upstream endpoints.
+- Record token usage, spend, provider metadata, latency, cache hit status, and tenant context.
+- Keep YAML as the runtime source of truth while syncing model metadata into PostgreSQL for admin and audit views.
+- Provide a modern admin console.
 
-网关分为三层：
-
-### 2.1 接入层
-
-* 统一 API（兼容 OpenAI / Anthropic）
-* header / param 透传
-* streaming 支持（SSE）
-
-### 2.2 治理层
-
-* API Key 管理
-* 权限控制（模型级）
-* 配额与限流
-* 计费与消费统计
-
-### 2.3 智能调度层
-
-* 健康检查
-* 负载均衡
-* fallback / retry
-* 语义缓存
-* 成本优化
-
----
-
-## 3. 整体架构
+## 2. Current Architecture
 
 ```text
 Client
-   │
-   ▼
-LLM Gateway
- ├── API Adapter
- ├── Auth & Policy
- ├── Routing Engine
- ├── Optimization Layer
- ├── Metering & Audit
-   │
-   ▼
-Providers（OpenAI / Anthropic / vLLM 等）
+  |
+  v
+Gin Gateway
+  |-- Auth middleware
+  |-- Spend middleware
+  |-- Proxy adapters
+  |-- Balancer
+  v
+Provider endpoints
 
-Data Layer:
-- PostgreSQL（配置 / 计费 / 审计）
-- Redis（限流 / 缓存 / 状态）
-- Vector DB（语义缓存）
+PostgreSQL:
+  - organizations, teams, API keys
+  - admin users
+  - model groups and endpoints
+  - spend logs
 ```
 
----
+## 3. Configuration Model
 
-## 4. 技术选型
+- `config/config.yaml` is the runtime authority for model routing.
+- `JANUS_DATABASE_URL` and `JANUS_ADMIN_MASTER_KEY` override local YAML secrets.
+- Startup sync upserts YAML model groups/endpoints into PostgreSQL.
+- Items removed from YAML are marked `enabled=false` in DB instead of being deleted.
+- Plain provider `api_key` values are not written to DB. Only `api_key_secret_ref` is synced.
+- Proxy registration still uses YAML data directly.
 
-### 后端
+## 4. API Ingress
 
-* Golang + Gin
-* net/http（自定义 transport）
+Implemented:
 
-### 数据层
+- `/v1/chat/completions`
+- `/v1/completions`
+- `/v1/embeddings`
+- `/v1/messages`
+- `/v1/models`
+- OpenAI adapter
+- Anthropic adapter
+- SSE streaming proxy
+- Swagger UI at `/swagger/`
 
-* PostgreSQL（主数据）
-* Redis（缓存 / 限流）
-* pgvector（语义缓存）
+Planned:
 
-### 观测
+- Complete error response standardization.
+- Header forwarding allowlist.
+- More provider-specific request validation.
 
-* Prometheus + Grafana
-* OpenTelemetry
+## 5. Governance
 
-### 管理后台
+Implemented:
 
-* React / Next.js
+- API key authentication.
+- Key/team model permission intersection.
+- Balance and expiration checks.
+- Per-key RPM limiting.
+- Key cache refresh and idle eviction.
+- Admin Basic Auth.
+- Organization, team, and key CRUD APIs.
+- Auth helper functions that return errors instead of terminating the process.
 
----
+Planned:
 
-## 5. 核心设计
+- TPM limiting.
+- Daily/monthly token quotas.
+- Daily/monthly spend budgets.
+- Concurrency limits.
+- IP allowlists.
+- Platform and tenant admin roles.
 
----
+## 6. Routing
 
-## 5.1 统一请求模型（Canonical Request）
+Implemented:
 
-```go
-type CanonicalRequest struct {
-    Model       string
-    Messages    []Message
-    Temperature *float64
-    MaxTokens   *int
-    Stream      bool
-    Metadata    map[string]string
-}
-```
+- Extensible `Balancer` interface with request selection context.
+- Round-robin strategy.
+- Weighted strategy.
+- Latency-based strategy using observed successful request latency.
+- Client-sticky strategy using key/team/header/IP identity to improve prefix cache locality.
+- Retry/fallback within the selected model group.
+- Upstream timeout settings.
 
-作用：
+Planned:
 
-* 屏蔽 provider 差异
-* 统一路由、缓存、计费逻辑
+- Least-inflight strategy.
+- Active and passive health checks.
+- Circuit breaker and half-open recovery.
+- Cross-provider fallback policy.
 
----
+## 7. Billing And Audit
 
-## 5.2 API 接入层
+Implemented:
 
-### 支持接口
+- Token usage extraction from upstream responses.
+- Request spend records in `janus_spend_log`.
+- Key balance deduction and total spend update.
+- Streaming billing when SSE usage is present.
+- Skipping misleading zero-token spend records when usage is missing.
+- Metadata fields: `provider`, `latency_ms`, `cache_hit`, `tenant`.
 
-* `/v1/chat/completions`（OpenAI）
-* `/v1/messages`（Anthropic）
+Planned:
 
-### 功能
+- Dashboard query APIs.
+- Aggregated spend summaries.
+- More detailed provider and tenant reporting.
 
-* header 透传（白名单）
-* streaming（SSE）
-* 参数透传
-* 错误标准化
+## 8. Admin Frontend
 
----
+Implemented:
 
-## 5.3 账号与权限系统
+- `web/` Vite + React + TypeScript project.
+- First screen is an admin dashboard, not a landing page.
+- Sections for overview metrics, model groups, API keys, usage/spend, and configuration status.
+- Mock data and API client helpers for future `/v1/admin/*` and `/v1/models` integration.
 
-### 角色
+Planned:
 
-* 平台管理员
-* 租户管理员
-* API Key
+- Live admin API integration.
+- Authentication flow for admin credentials.
+- Mutating forms for organizations, teams, keys, and model metadata.
 
-### API Key 功能
+## 9. Cache
 
-* 有效期
-* 模型权限
-* 限流 / 配额
-* IP 白名单
+Not started:
 
----
+- L1 exact cache.
+- L2 semantic cache.
+- L3 prompt fragment cache.
+- Janus-managed `x-cache-hit` response header.
+- Tenant-isolated cache policy.
 
-## 5.4 配额与限流
+The spend schema already includes `cache_hit` so cache rollout can be measured later.
 
-支持：
+## 10. Deployment And Observability
 
-* RPM（请求速率）
-* TPM（token速率）
-* 日/月 token 限额
-* 日/月费用限额
-* 并发限制
+Not started:
 
-执行顺序：
+- Prometheus/Grafana metrics.
+- OpenTelemetry tracing.
+- Load test baseline.
+- Container and deployment manifests.
+- Rollout and rollback process.
 
-```text
-鉴权 → 模型权限 → 并发 → 限流 → 预算
-```
+## 11. MVP Boundary
 
----
+The current MVP supports:
 
-## 5.5 智能路由设计
+1. OpenAI/Anthropic API proxying.
+2. API key and model permission checks.
+3. Basic RPM limiting, fallback, and billing.
+4. PostgreSQL schema initialization.
+5. Admin API and admin dashboard scaffold.
+6. Startup YAML-to-DB model config synchronization.
 
-### 路由层级
+Before production use, prioritize:
 
-1. 逻辑模型 → provider
-2. provider → 实例
-
----
-
-### 负载均衡策略
-
-* Round Robin
-* Weighted
-* Least inflight
-* Latency-based
-
----
-
-### 推荐：Score 路由
-
-```text
-score =
-  health +
-  latency +
-  load +
-  cost +
-  error_penalty
-```
-
----
-
-### fallback 机制
-
-* 同实例 retry
-* 同 provider fallback
-* 跨 provider fallback
-
----
-
-## 5.6 健康检查
-
-### 被动
-
-* 错误率
-* 延迟
-* 超时
-
-### 主动
-
-* /models
-* 小请求探测
-
-### 熔断
-
-* error rate 超阈值 → 熔断
-* 半开恢复
-
----
-
-## 5.7 语义缓存
-
-### 三层缓存
-
-| 层级 | 类型            |
-| ---- | --------------- |
-| L1   | 精确缓存        |
-| L2   | 语义缓存        |
-| L3   | prompt 片段缓存 |
-
----
-
-### 语义缓存流程
-
-1. prompt normalization
-2. embedding
-3. 向量检索
-4. 相似度判断
-5. 命中返回
-
----
-
-### 命中条件
-
-* 相似度 > 阈值
-* model 相同
-* system prompt 相同
-* 低温度
-
----
-
-### 建议
-
-* 默认 **租户隔离缓存**
-* 返回 `x-cache-hit` header
-
----
-
-## 5.8 计费系统
-
-### usage 记录字段
-
-* request_id
-* tenant_id
-* model
-* provider
-* tokens
-* cost
-* latency
-* cache_hit
-
----
-
-### 计费公式
-
-```text
-cost =
-  input_tokens * input_price
-+ output_tokens * output_price
-```
-
----
-
-## 6. 数据库设计（核心表）
-
-### tenants
-
-* 租户
-
-### api_keys
-
-* key
-* hash
-* 权限
-* 配额
-
-### providers
-
-* provider 信息
-
-### model_endpoints
-
-* 模型与 provider 映射
-
-### pricing_rules
-
-* 价格规则
-
-### usage_logs
-
-* 使用记录
-
-### quota_policies
-
-* 限流策略
-
----
-
-## 7. 配置管理设计
-
-## 7.1 分层配置
-
-| 类型     | 存储           |
-| -------- | -------------- |
-| 静态配置 | yaml / env     |
-| 动态配置 | PostgreSQL     |
-| 敏感信息 | Secret / Vault |
-
----
-
-## 7.2 推荐方案
-
-* yaml：仅用于启动配置
-* DB：模型 / 路由 / 价格 / 权限
-* Redis：运行态状态
-
----
-
-## 8. 核心能力补充
-
-### 观测
-
-* QPS
-* latency p95/p99
-* error rate
-* cache hit
-
-### 安全
-
-* 审计日志
-* IP 白名单
-* 脱敏
-
-### 模型别名
-
-* `cheap-chat`
-* `fast-reasoning`
-
-### Shadow Traffic
-
-* A/B 测试模型
-
-### 幂等支持
-
-* Idempotency-Key
-
----
-
-## 9. 项目结构
-
-```text
-llm-gateway/
-├── cmd/
-├── internal/
-│   ├── adapters/
-│   ├── router/
-│   ├── auth/
-│   ├── billing/
-│   ├── cache/
-│   ├── health/
-│   └── telemetry/
-├── migrations/
-├── deployments/
-└── web-admin/
-```
-
----
-
-## 10. 开发排期（16周）
-
-### Phase 1（3周）
-
-* 基础代理
-* OpenAI / Anthropic 支持
-* SSE
-
-### Phase 2（3周）
-
-* API Key
-* 限流 / 配额
-
-### Phase 3（3周）
-
-* 路由
-* fallback
-* 健康检查
-
-### Phase 4（3周）
-
-* 计费
-* 管理后台
-
-### Phase 5（2周）
-
-* 语义缓存
-
-### Phase 6（1周）
-
-* 压测
-* 部署
-
----
-
-## 11. MVP 边界
-
-### 必做
-
-* API 兼容
-* Key 管理
-* 限流
-* usage
-* fallback
-* 精确缓存
-
-### 后续
-
-* 语义缓存
-* Shadow traffic
-* 安全治理
-
----
-
-## 12. 风险与建议
-
-### 风险
-
-* 协议复杂
-* 流式处理难
-* 缓存误命中
-* 计费不准
-
-### 建议
-
-* 先做 80% 功能
-* 分层设计
-* usage 与 billing 解耦
-* 配置中心化
-
----
-
-## 13. 最终总结
-
-这个网关的核心价值在于：
-
-> **统一入口 + 智能调度 + 成本控制 + 权限治理**
-
-优先级建议：
-
-1. API + Key + 计费
-2. 路由与 fallback
-3. 语义缓存优化
-
----
-
-如果你下一步想继续推进，我可以帮你细化：
-
-* Go 项目骨架（可直接开工）
-* 数据库 SQL
-* API Swagger
-* Router 核心代码设计
-* Kubernetes 部署方案
-
-直接可以进入“写代码阶段”。
+1. Live frontend integration.
+2. Health checks and circuit breaking.
+3. TPM/budget/concurrency limits.
+4. Observability and load testing.
