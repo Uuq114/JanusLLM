@@ -2,17 +2,19 @@
 
 JanusLLM is an AI gateway designed to streamline interactions with multiple Large Language Model (LLM) APIs through one unified entry point.
 
-## Features
-
-- Unified gateway for OpenAI-compatible and Anthropic-compatible providers.
-- Native proxy endpoints for chat completions, completions, embeddings, Anthropic messages, and model listing.
-- Load balancing with round-robin, weighted, latency-based, and client-sticky policies.
-- API key auth, model permissions, expiration checks, balance checks, and per-key RPM limiting.
-- Token usage metering, spend logs, and key balance updates.
-- PostgreSQL-backed organizations, teams, API keys, admin users, model metadata, and spend logs.
-- Admin API and Swagger UI for local operations.
-
 ## Architecture
+
+![arch](img/architecture.png)
+
+### Features
+
+JanusLLM offers a robust set of features to enhance the efficiency, scalability, and cost-effectiveness of LLM usage:
+
+- Unified API Gateway for OpenAI/Anthropic LLM providers
+- Advanced Load Balancing: Supports round-robin and weighted policies.
+- Billing and Cost Management: Tracks token usage and spend by request/key/team/org/model, and updates key balance/total spend.
+- Usage Limits and Quotas: Supports API key auth, model permission checks, key expiration, balance checks, and per-key RPM rate limiting.
+
 
 ![Architecture](doc/img/janusllm_arch.png)
 
